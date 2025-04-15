@@ -153,6 +153,8 @@ pure def parent_id (p: Proposal): int =
 
 type Ledger = List[Proposal] // TODO: what is the ledger?
 
+type Address = str
+
 type LocalState = {
   high_tip: Tip,
   last_tc: TC,
@@ -160,7 +162,7 @@ type LocalState = {
   ledger: Ledger,
   highest_voted_view: int,
   // recovering? perhaps Set[int] encoding the views where it is true
-  address: str,
+  address: Address,
 }
 
 pure def initialize_process (address: str): LocalState =
@@ -198,7 +200,7 @@ type ConsensusOutput =
   | Commit(Proposal)
   | EarlyConfirmation(Proposal)
   | Confirmation(Proposal)
-  | SendVoteToNextLeader(VoteMsg)
+  | SendVoteToNextLeader((Address, VoteMsg))
 // Algorithm 5 has many more responses
 
 type ConsensusResult = {
@@ -256,12 +258,26 @@ action init = all {
   timeoutBuffer' = validators.mapBy(v => Set()),
 }
 
-action apply_output(v: str, output: ConsensusResult) : bool = all {
-  // TODO
-  system' = system.set(v, output.state),
+action buffers_unchanged = all {
   voteBuffer' = voteBuffer,
   propBuffer' = propBuffer,
   timeoutBuffer' = timeoutBuffer,
+}
+
+action apply_output(v: str, output: ConsensusResult) : bool = all {
+  // TODO
+  system' = system.set(v, output.state),
+  match output.output.getOnlyElement() {  // TODO: we should check if we need to return a set after all
+                                          // e.g., issue with Algorithm 2 line 42
+    | BroadcastProp(p) =>
+        buffers_unchanged
+    | SendVoteToNextLeader(am) => all {
+        voteBuffer' = voteBuffer.put(am._1, voteBuffer.get(am._1).union(Set(am._2))),
+        propBuffer' = propBuffer,
+        timeoutBuffer' = timeoutBuffer
+      }
+    | _ => buffers_unchanged
+  }
 }
 
 action act_receive_some_vote (v: str) : bool = all {
