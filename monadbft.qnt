@@ -3,19 +3,52 @@
 module monadbft {
   import basicSpells.* from "./basicSpells"
 
+  val ERROR_CODE = (-256)
+
 //
 // Data structures (page 8)
 //
 
 type QC = Set[VoteMsg]           // TODO 2f+1
+type Proposal_ID = {seq: int, view: int, byzantine: int} 
 
-pure def view(qc: QC): int =
-  // TODO get the view of the qc
-  0
+/// Implementation of the `view` function for a quorum certificate.
+pure def view(qc: QC): int = {
+  // First, check that the QC is not empty.
+  if (qc == Set()) ERROR_CODE
+  else {
+    // Extract the set of view numbers from each vote message in the QC.
+    val views = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.view))
+    // If the QC is well-formed all vote messages should share the same view.
+    if (views.size() != 1) ERROR_CODE
+    else views.getOnlyElement()
+    }
+}
 
-pure def proposal_id(qc: QC): int =
-  // TODO get the proposal id of the qc
-  0
+pure def get_seq(qc: QC): int = {
+  if (qc == Set()) ERROR_CODE
+  else {
+    // Extract the set of view numbers from each vote message in the QC.
+    val seqs = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.seq))
+    // If the QC is well-formed all vote messages should share the same view.
+    if (seqs.size() != 1) ERROR_CODE
+    else seqs.getOnlyElement()
+    }
+}
+
+pure def proposal_id(qc: QC): int = {
+  if (qc == Set()) ERROR_CODE
+  else {
+    val ids = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.proposal_id))
+    if (ids.size() != 1) ERROR_CODE
+    else ids.getOnlyElement() 
+  }
+}
+
+/// Hash is modeled as id
+pure def hash(s: str): str = {
+  s
+}
 
 pure def parent (qc1: QC, qc2: QC): bool =
   // TODO check if qc1 is a parent of qc2
@@ -58,7 +91,7 @@ type ProposalID = int
 
 type Proposal = {
   view: int,
-  proposal_id: ProposalID,
+  proposal_id: Proposal_ID,
   block: Block,
   sigma: Signature,
   tc: TC,
@@ -118,27 +151,33 @@ type TimeoutMsg = {
 // Algorithm 1 (page 13)
 //
 
+/// BuildBlock function
+/// Pseudocode reference: Algorithm 1, page 13 (line 1)
 pure def build_block(qc: QC, payload: str): Block =
-  // TODO build a block
   {
-    seq: 0,
-    payload: payload,
-    payload_hash: "",
-    qc: qc,
-    block_hash: 0,
-  }
+  seq: get_seq(qc) + 1,
+  payload: payload,
+  payload_hash: hash(payload),
+  qc: qc,
+  block_hash: 0 //TODO: what to put here 
+}
 
-pure def build_proposal(view: int, block: Block, tc: TC, nec: NEC): Proposal =
-  // TODO build a proposal
+/// Form a proposal out of a block and a set of certificates
+/// Pseudocode reference: Algorithm 1, page 13 (line 6)
+pure def build_proposal(view: int, block: Block, tc: TC, nec: NEC): Proposal = {
+  val id = {seq: block.seq, view: view, byzantine: 0}
   {
     view: view,
-    proposal_id: 0,
+    proposal_id: id,
     block: block,
     sigma: "",
     tc: tc,
     nec: nec,
   }
+}
 
+/// Check if the proposal is safe
+/// Pseudocode reference: Algorithm 1, page 13 (line 10)
 pure def safety_check(p: Proposal): bool =
   // TODO check if the proposal is safe
   true
