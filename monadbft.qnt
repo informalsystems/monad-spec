@@ -162,7 +162,7 @@ type LocalState = {
   ledger: Ledger,
   highest_voted_view: int,
   // recovering? perhaps Set[int] encoding the views where it is true
-  address: Address,
+  address: Address, // TODO: this is not in the paper, but we need it to identify the process
 }
 
 pure def initialize_process (address: str): LocalState =
@@ -208,10 +208,14 @@ type ConsensusResult = {
   state: LocalState,
 }
 
+
+// Alg 2 line 3
 pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult =
   // TODO
   { state: s, output: Set() }
 
+
+// Alg 2 line 10 / line 52 (leader/ non-leader)
 pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult =
   if (s.is_leader())
     // TODO line 11
@@ -221,10 +225,13 @@ pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult =
     { state: s, output: Set() }
 
 
+// Alg 2 line 34
 pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult =
   // TODO
   { state: s, output: Set() }
 
+
+// Alg 2 line 49
 pure def timeout_event (s: LocalState): ConsensusResult =
   // TODO
   { state: s, output: Set() }
@@ -232,10 +239,13 @@ pure def timeout_event (s: LocalState): ConsensusResult =
 
 // Algorithm 3 (page 16)
 
+// Alg 3 line 1
 pure def find_high_tip (tc: TC): int =
   // TODO
   tc.id
 
+
+// Alg 3 line 11
 pure def verify_fresh_proposal(tip: Tip): bool =
   // TODO check if the proposal is fresh
   true
@@ -245,65 +255,77 @@ pure def verify_fresh_proposal(tip: Tip): bool =
 
 const validators: Set[str]
 
-var system: str -> LocalState
-var voteBuffer: str -> Set[VoteMsg]
-var propBuffer: str -> Set[Proposal]
-var timeoutBuffer: str -> Set[TimeoutMsg]
+type Environment = {
+  system: str -> LocalState,
+  voteBuffer: str -> Set[VoteMsg],
+  propBuffer: str -> Set[Proposal],
+  timeoutBuffer: str -> Set[TimeoutMsg],
+}
+
+var s: Environment
+
 
 // TODO: I think we need to preload with a vote message towards the proposer
 action init = all {
-  system' =validators.mapBy(v => initialize_process(v)),
-  voteBuffer' = validators.mapBy(v => Set()),
-  propBuffer' = validators.mapBy(v => Set()),
-  timeoutBuffer' = validators.mapBy(v => Set()),
-}
-
-action buffers_unchanged = all {
-  voteBuffer' = voteBuffer,
-  propBuffer' = propBuffer,
-  timeoutBuffer' = timeoutBuffer,
-}
-
-action apply_output(v: str, output: ConsensusResult) : bool = all {
-  // TODO
-  system' = system.set(v, output.state),
-  match output.output.getOnlyElement() {  // TODO: we should check if we need to return a set after all
-                                          // e.g., issue with Algorithm 2 line 42
-    | BroadcastProp(p) =>
-        buffers_unchanged
-    | SendVoteToNextLeader(am) => all {
-        voteBuffer' = voteBuffer.put(am._1, voteBuffer.get(am._1).union(Set(am._2))),
-        propBuffer' = propBuffer,
-        timeoutBuffer' = timeoutBuffer
-      }
-    | _ => buffers_unchanged
+  s' = {
+    system: validators.mapBy(v => initialize_process(v)),
+    voteBuffer: validators.mapBy(v => Set()),
+    propBuffer: validators.mapBy(v => Set()),
+    timeoutBuffer: validators.mapBy(v => Set()),
   }
 }
 
+
+
+
+pure def apply_effect (env: Environment, v: str, res: ConsensusResult): Environment =
+// TODO
+  val new = { ... env, system: env.system.set(v, res.state) }
+  res.output.fold(new, (s, x) => {
+    match x {
+      | BroadcastProp(p) =>
+          s
+      | BroadCastTimeout(t) =>
+          s
+      | Commit(p) =>
+          s
+      | EarlyConfirmation(p) =>
+          s
+      | Confirmation(p) =>
+          s
+      | SendVoteToNextLeader(am) =>
+          s
+    }
+  })
+
+action apply_output(v: str, res: ConsensusResult) : bool = all {
+  s' = apply_effect(s, v, res)
+}
+
 action act_receive_some_vote (v: str) : bool = all {
-  voteBuffer.get(v) != Set(),
-  nondet vote = oneOf(voteBuffer.get(v))
-  val output = system.get(v).receive_vote(vote)
-  apply_output(v, output)
+  s.voteBuffer.get(v) != Set(),
+  nondet vote = oneOf(s.voteBuffer.get(v))
+  val res = s.system.get(v).receive_vote(vote)
+  apply_output(v, res)
 }
 
 action act_receive_some_timeout (v: str) : bool = all {
-  timeoutBuffer.get(v) != Set(),
-  nondet timeout = oneOf(timeoutBuffer.get(v))
-  val output = system.get(v).receive_timeout(timeout)
-  apply_output(v, output)
+  s.timeoutBuffer.get(v) != Set(),
+  nondet timeout = oneOf(s.timeoutBuffer.get(v))
+  val res = s.system.get(v).receive_timeout(timeout)
+  apply_output(v, res)
 }
 
 action act_receive_some_proposal (v: str) : bool = all {
-  propBuffer.get(v) != Set(),
-  nondet prop = oneOf(propBuffer.get(v))
-  val output = system.get(v).receive_proposal(prop)
-  apply_output(v, output)
+  s.propBuffer.get(v) != Set(),
+  nondet prop = oneOf(s.propBuffer.get(v))
+  val res = s.system.get(v).receive_proposal(prop)
+  apply_output(v, res)
 }
 
 action act_timeout (v: str) : bool = all {
-  val output = system.get(v).timeout_event()
-  apply_output(v, output)
+  val res = s.system.get(v).timeout_event()
+  apply_output(v, res)
 }
 
 action step =
@@ -315,11 +337,11 @@ action step =
     act_timeout(v)
   }
 
+} // end of module monadbft
 
-}
+
 
 module example {
   import monadbft(validators = Set("v1", "v2", "v3", "v4")).* 
   
-  
-  }
+} // end of module example
