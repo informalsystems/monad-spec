@@ -386,7 +386,7 @@ action act_timeout (v: str) : bool = all {
   apply_output(v, res)
 }
 
-pure def apply_acceleration (state: Environment, msgs: Address -> Set[VoteMsg]): Environment =
+pure def apply_acceleration_votes (state: Environment, msgs: Address -> Set[VoteMsg]): Environment =
   msgs.keys().fold(state, (s, v) => 
     msgs.get(v).fold(s, (s2, vote) => 
       val consumed_vote_state = { ... s2, voteBuffer: s2.voteBuffer.set(v, s2.voteBuffer.get(v).exclude(Set(vote))) }
@@ -394,14 +394,50 @@ pure def apply_acceleration (state: Environment, msgs: Address -> Set[VoteMsg]):
       apply_effect(consumed_vote_state, v, res)
     ))
 
+pure def apply_acceleration_proposals (state: Environment, msgs: Address -> Set[Proposal]): Environment =
+  msgs.keys().fold(state, (s, v) => 
+    msgs.get(v).fold(s, (s2, prop) => 
+      val consumed_prop_state = { ... s2, propBuffer: s2.propBuffer.set(v, s2.propBuffer.get(v).exclude(Set(prop))) }
+      val res = consumed_prop_state.system.get(v).receive_proposal(prop)
+      apply_effect(consumed_prop_state, v, res)
+    ))
+
+pure def apply_acceleration_timeouts (state: Environment, msgs: Address -> Set[TimeoutMsg]): Environment =
+  msgs.keys().fold(state, (s, v) => 
+    msgs.get(v).fold(s, (s2, timeout) => 
+      val consumed_timeout_state = { ... s2, timeoutBuffer: s2.timeoutBuffer.set(v, s2.timeoutBuffer.get(v).exclude(Set(timeout))) }
+      val res = consumed_timeout_state.system.get(v).receive_timeout(timeout)
+      apply_effect(consumed_timeout_state, v, res)
+    ))
+
 // TODO: this needs to be checked. 
 // non-deterministically pick a set of processes. For each, non-deterministically pick a set of votes
 // and deliver them to the process in one action.
-action acceleration = 
+action acceleration_votes = 
   nondet vals = validators.powerset().oneOf()
   val msgs = tuples(vals, s.voteBuffer.values()).filter(t => t._2.subseteq(s.voteBuffer.get(t._1)))
   val deliver = msgs.setToMap() // I am mis-using this here. I want a non-deterministic choice
-  s' =  apply_acceleration(s, deliver)
+  s' =  apply_acceleration_votes(s, deliver)
+
+action acceleration_proposals =
+  nondet vals = validators.powerset().oneOf()
+  val msgs = tuples(vals, s.propBuffer.values()).filter(t => t._2.subseteq(s.propBuffer.get(t._1)))
+  val deliver = msgs.setToMap() // I am mis-using this here. I want a non-deterministic choice
+  s' =  apply_acceleration_proposals(s, deliver)
+
+action acceleration_timeouts =
+  nondet vals = validators.powerset().oneOf()
+  val msgs = tuples(vals, s.timeoutBuffer.values()).filter(t => t._2.subseteq(s.timeoutBuffer.get(t._1)))
+  val deliver = msgs.setToMap() // I am mis-using this here. I want a non-deterministic choice
+  s' =  apply_acceleration_timeouts(s, deliver)
+
+action accelerated_step = any {
+  acceleration_votes,
+  acceleration_proposals,
+  acceleration_timeouts,
+  nondet v = oneOf(validators)
+  act_timeout(v),
+}  
 
 action step =
   nondet v = oneOf(validators)
