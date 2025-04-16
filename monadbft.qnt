@@ -335,38 +335,48 @@ action apply_output(v: str, res: ConsensusResult) : bool = all {
   s' = apply_effect(s, v, res)
 }
 
+
+
+
+
 // Example of acceleration: function that receives all votes
 // TODO: we should think about recording the consensus inputs
 pure def receive_all_votes (state: Environment, v: Address): Environment =
-  state.voteBuffer.get(v).fold(state, (s, vote) => {
-    val consumed_vote_state = { ... s, voteBuffer: s.voteBuffer.set(v, s.voteBuffer.get(v).exclude(Set(vote))) }
-    val res = consumed_vote_state.system.get(v).receive_vote(vote)
-    apply_effect(consumed_vote_state, v, res)
-  })
+  state.voteBuffer.get(v).fold(state, (s, vote) => 
+    receive_one_vote(s, v, vote)
+  )
 
+pure def receive_one_vote (state: Environment, v: Address, vote: VoteMsg): Environment =
+  val consumed_vote_state = { ... state, voteBuffer: state.voteBuffer.set(v, state.voteBuffer.get(v).exclude(Set(vote))) }
+  val res = consumed_vote_state.system.get(v).receive_vote(vote)
+  apply_effect(consumed_vote_state, v, res)
 
 action act_receive_some_vote (v: str) : bool = all {
   s.voteBuffer.get(v) != Set(),
   nondet vote = oneOf(s.voteBuffer.get(v))
-  val consumed_msg_state = { ... s, voteBuffer: s.voteBuffer.set(v, s.voteBuffer.get(v).exclude(Set(vote))) }
-  val res = consumed_msg_state.system.get(v).receive_vote(vote) 
-  apply_output(v, res)
+  s' = receive_one_vote(s, v, vote)
 }
+
+pure def receive_one_timeout (state: Environment, v: Address, timeout: TimeoutMsg): Environment =
+  val consumed_timeout_state = { ... state, timeoutBuffer: state.timeoutBuffer.set(v, state.timeoutBuffer.get(v).exclude(Set(timeout))) }
+  val res = consumed_timeout_state.system.get(v).receive_timeout(timeout)
+  apply_effect(consumed_timeout_state, v, res)
 
 action act_receive_some_timeout (v: str) : bool = all {
   s.timeoutBuffer.get(v) != Set(),
   nondet tomsg = oneOf(s.timeoutBuffer.get(v))
-  val consumed_msg_state = { ... s, timeoutBuffer: s.timeoutBuffer.set(v, s.timeoutBuffer.get(v).exclude(Set(tomsg))) }
-  val res = consumed_msg_state.system.get(v).receive_timeout(tomsg)
-  apply_output(v, res)
+  s' = receive_one_timeout(s, v, tomsg)
 }
+
+pure def receive_one_proposal (state: Environment, v: Address, prop: Proposal): Environment =
+  val consumed_prop_state = { ... state, propBuffer: state.propBuffer.set(v, state.propBuffer.get(v).exclude(Set(prop))) }
+  val res = consumed_prop_state.system.get(v).receive_proposal(prop)
+  apply_effect(consumed_prop_state, v, res)
 
 action act_receive_some_proposal (v: str) : bool = all {
   s.propBuffer.get(v) != Set(),
   nondet prop = oneOf(s.propBuffer.get(v))
-  val consumed_msg_state = { ... s, propBuffer: s.propBuffer.set(v, s.propBuffer.get(v).exclude(Set(prop))) }
-  val res = consumed_msg_state.system.get(v).receive_proposal(prop)
-  apply_output(v, res)
+  s' = receive_one_proposal(s, v, prop)
 }
 
 action act_timeout (v: str) : bool = all {
@@ -375,6 +385,23 @@ action act_timeout (v: str) : bool = all {
   val res = consumed_timeout_state.system.get(v).timeout_event()
   apply_output(v, res)
 }
+
+pure def apply_acceleration (state: Environment, msgs: Address -> Set[VoteMsg]): Environment =
+  msgs.keys().fold(state, (s, v) => 
+    msgs.get(v).fold(s, (s2, vote) => 
+      val consumed_vote_state = { ... s2, voteBuffer: s2.voteBuffer.set(v, s2.voteBuffer.get(v).exclude(Set(vote))) }
+      val res = consumed_vote_state.system.get(v).receive_vote(vote)
+      apply_effect(consumed_vote_state, v, res)
+    ))
+
+// TODO: this needs to be checked. 
+// non-deterministically pick a set of processes. For each, non-deterministically pick a set of votes
+// and deliver them to the process in one action.
+action acceleration = 
+  nondet vals = validators.powerset().oneOf()
+  val msgs = tuples(vals, s.voteBuffer.values()).filter(t => t._2.subseteq(s.voteBuffer.get(t._1)))
+  val deliver = msgs.setToMap() // I am mis-using this here. I want a non-deterministic choice
+  s' =  apply_acceleration(s, deliver)
 
 action step =
   nondet v = oneOf(validators)
