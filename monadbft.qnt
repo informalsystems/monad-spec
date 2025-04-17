@@ -53,7 +53,7 @@ type ConsensusOutput =
   | Commit(Proposal)
   | EarlyConfirmation(Proposal)
   | Confirmation(Proposal)
-  | SendVoteToNextLeader((Address, VoteMsg))
+  | SendVoteToNextLeader(VoteMsg)
 // Algorithm 5 has more responses
 
 type ConsensusResult = {
@@ -61,9 +61,10 @@ type ConsensusResult = {
   state: LocalState,
 }
 
+
 // CSMI
 // This initializes process that is identified by address
-pure def initialize_process (address: str): LocalState =
+pure def initialize_process (address: Address): LocalState =
   {
     high_tip: {
       view: -1,
@@ -408,7 +409,6 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
 //
 
 
-
 //
 // Standard interleaving semantics (one process receives one message/timeout in one action)
 //
@@ -424,23 +424,33 @@ pure def fire_one_timeout_event (state: Environment, v: Address, timeout: Timeou
   val res = consumed_timeout_state.system.get(v).fire_timeout_event(timeout)
   apply_effect(consumed_timeout_state, v, res)
 
-action act_receive_some_msg (v: str) : bool = all {
-  s.msgBuffer.get(v) != Set(),
-  nondet msg = oneOf(s.msgBuffer.get(v))
+action act_receive_msg (v: Address, msg: Message) : bool = all {
+  s.msgBuffer.get(v).contains(msg),
   s' = receive_one_message(s, v, msg)
 }
 
-action act_timeout (v: str) : bool = all {
+action act_receive_some_msg (v: Address) : bool = all {
+  s.msgBuffer.get(v) != Set(),
+  nondet msg = oneOf(s.msgBuffer.get(v))
+  act_receive_msg(v, msg)
+}
+
+action act_timeout (v: Address, timeout: TimeoutEvent) : bool = all {
+  s.activeTimeouts.get(v).contains(timeout),
+  s' = fire_one_timeout_event(s, v, timeout)
+}
+
+action act_some_timeout (v: Address) : bool = all {
   s.activeTimeouts.get(v) != Set(),
   nondet timeout = oneOf(s.activeTimeouts.get(v))
-  s' = fire_one_timeout_event(s, v, timeout)
+  act_timeout(v, timeout)
 }
 
 action step =
   nondet v = oneOf(validators)
   any {
     act_receive_some_msg(v),
-    act_timeout(v)
+    act_some_timeout(v)
   }
 
 //
@@ -463,17 +473,16 @@ pure def apply_acceleration_timeout (state: Environment, timeouts: Address -> Se
 // non-deterministically pick a set of processes. For each, non-deterministically pick a set of votes
 // and deliver them to the process in one action.
 action acceleration_msgs = 
-  nondet msgs = validators.map(v => s.msgBuffer.get(v).powerset().exclude(Set(Set())).map(m => (v, m)))
-                .flatten().powerset().oneOf()
-  val deliver = msgs.setToMap() 
+  val msgs = validators.map(v => s.msgBuffer.get(v).map(m => (v, m))).flatten()
+  nondet msgsToDeliver = msgs.powerset().oneOf()
+  val deliver = validators.mapBy(v => msgsToDeliver.filter(m => m._1 == v).map(m => m._2))
   s' =  apply_acceleration_msgs(s, deliver)
 
 action acceleration_timeouts = 
-  nondet timeouts = validators.map(v => s.activeTimeouts.get(v).powerset().exclude(Set(Set())).map(t => (v, t)))
-                .flatten().powerset().oneOf()
-  val deliver = timeouts.setToMap() 
+  val timeouts = validators.map(v => s.activeTimeouts.get(v).map(m => (v, m))).flatten()
+  nondet timeoutsToDeliver = timeouts.powerset().oneOf()
+  val deliver = validators.mapBy(v => timeoutsToDeliver.filter(m => m._1 == v).map(m => m._2))
   s' =  apply_acceleration_timeout(s, deliver)
-
 
 action accelerated_step = any {
   acceleration_msgs,
