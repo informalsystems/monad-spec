@@ -3,6 +3,124 @@
 module monadbft {
   import basicSpells.* from "./basicSpells"
 
+
+
+//
+//
+// Consensus / State machine interface CSMI
+// functional side
+//
+// Here one needs to specify 
+// - the types: Address, LocalState, Message, TimeoutEvent, ConsensusOutput
+// - the functions: initialize_process, receive_message, fire_timeout_event (that define the
+//   message handlers and timeout handlers of the algorithm)  
+//
+
+// CSMI
+type Address = str
+
+// CSMI
+type LocalState = {
+  // Variables from Algorithm 2
+  high_tip: Tip,
+  last_tc: TC,
+  curView: int,
+  ledger: Ledger,
+  highest_voted_view: int,
+  // recovering? perhaps Set[int] encoding the views where it is true
+
+  // Variables from Algorithm 4
+  votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
+
+  // TODO: this is not in the paper, but we need it to identify the process
+  address: Address, 
+}
+
+// CSMI
+type Message =
+  | Prop(Proposal)
+  | Vote(VoteMsg)
+  | Timeout(TimeoutMsg)
+  | NoEndorsement(NoEndorsementMsg)
+
+// CSMI
+type TimeoutEvent = int
+
+// CSMI
+type ConsensusOutput =
+  | BroadcastProp(Proposal)
+  | BroadCastTimeout(TimeoutMsg)
+  | Commit(Proposal)
+  | EarlyConfirmation(Proposal)
+  | Confirmation(Proposal)
+  | SendVoteToNextLeader((Address, VoteMsg))
+// Algorithm 5 has more responses
+
+type ConsensusResult = {
+  output: Set[ConsensusOutput],
+  state: LocalState,
+}
+
+// CSMI
+// This initializes process that is identified by address
+pure def initialize_process (address: str): LocalState =
+  {
+    high_tip: {
+      view: -1,
+      proposal_id: -1,
+      block_header: {
+        seq: -1,
+        payload_hash: "",
+        qc: Set(),
+        block_hash: -1,
+      },
+      sigma: "",
+      nec: Set(),
+      tip_id: -1,
+    },
+    last_tc: {
+      id: -1,
+      c: Set(),
+    },
+    curView: 0,
+    ledger: [],
+    highest_voted_view: -1,
+    votes: Map(), 
+    address: address,
+  }
+
+// CSMI
+// This is the function that contains all the message handlers of the algorithm
+pure def receive_message(state: LocalState, msg: Message): ConsensusResult =
+  match msg {
+    | Prop(p) =>
+        state.receive_proposal(p)
+    | Vote(v) =>
+        state.receive_vote(v)
+    | Timeout(t) =>
+        state.receive_timeout(t)
+    | NoEndorsement(n) =>
+        // TODO
+        { state: state, output: Set() }
+  }
+
+// CSMI
+// This is the function that contains all the timeout handlers of the algorithm
+pure def fire_timeout_event(state: LocalState, timeout: TimeoutEvent): ConsensusResult =
+  if (state.curView == timeout)
+    state.timeout_event()
+  else
+    { state: state, output: Set() }
+
+// End of CSMI functional side
+
+
+
+
+//
+// Specifics of MonadBFT
+//
+
 //
 // Data structures (page 8)
 //
@@ -74,6 +192,9 @@ pure def conflicting_props (p1: Proposal, p2: Proposal): bool =
 
 // TODO Fresh proposal
 // TODO Reproposal
+
+
+
 
 type VoteMsg = {
   view: int,
@@ -161,68 +282,9 @@ pure def parent_id (p: Proposal): int =
 
 type Ledger = List[Proposal] // TODO: what is the ledger? Alg 2 line 45
 
-type Address = str
-
-type LocalState = {
-  // Variables from Algorithm 2
-  high_tip: Tip,
-  last_tc: TC,
-  curView: int,
-  ledger: Ledger,
-  highest_voted_view: int,
-  // recovering? perhaps Set[int] encoding the views where it is true
-
-  // Variables from Algorithm 4
-  votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
-
-  // TODO: this is not in the paper, but we need it to identify the process
-  address: Address, 
-}
-
-pure def initialize_process (address: str): LocalState =
-  {
-    high_tip: {
-      view: -1,
-      proposal_id: -1,
-      block_header: {
-        seq: -1,
-        payload_hash: "",
-        qc: Set(),
-        block_hash: -1,
-      },
-      sigma: "",
-      nec: Set(),
-      tip_id: -1,
-    },
-    last_tc: {
-      id: -1,
-      c: Set(),
-    },
-    curView: 0,
-    ledger: [],
-    highest_voted_view: -1,
-    votes: Map(), 
-    address: address,
-  }
-
 pure def is_leader(s: LocalState): bool =
   // TODO check if the node is the leader
   s.address == "v1" // TODO: this is just a placeholder
-
-type ConsensusOutput =
-  | BroadcastProp(Proposal)
-  | BroadCastTimeout(TimeoutMsg)
-  | Commit(Proposal)
-  | EarlyConfirmation(Proposal)
-  | Confirmation(Proposal)
-  | SendVoteToNextLeader((Address, VoteMsg))
-// Algorithm 5 has more responses
-
-type ConsensusResult = {
-  output: Set[ConsensusOutput],
-  state: LocalState,
-}
-
 
 // Alg 2 line 3
 pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult =
@@ -275,43 +337,50 @@ pure def verify_fresh_proposal(tip: Tip): bool =
 // TODO: shall/can we ignore block recovery for now?
 // TODO: there are more upons here.
 
+// End of specifics of MonadBFT
+
+
+//
+//
 // State machine
+//
+//
+
 
 const validators: Set[Address]
 
-
-
-
 type Environment = {
   system: Address -> LocalState,
-  voteBuffer: Address -> Set[VoteMsg],
-  propBuffer: Address -> Set[Proposal],
-  timeoutBuffer: Address -> Set[TimeoutMsg],
-  activeTimeouts: Address -> Set[int], // in which views the process is waiting for a timeout
+  msgBuffer: Address -> Set[Message],
+  activeTimeouts: Address -> Set[TimeoutEvent], 
 }
 
 var s: Environment
 
+//
+//
+// Consensus / State machine interface CSMI
+// effect side
+//
+//
 
-// TODO: I think we need to preload with a vote message towards the proposer
+// CSMI
 action init = all {
   s' = {
     system: validators.mapBy(v => initialize_process(v)),
-    voteBuffer: validators.mapBy(v => Set()),
-    propBuffer: validators.mapBy(v => 
-      Set(build_proposal( 1, 
-                          build_block(Set(), "first block"),
-                          { id: 1, c: Set()}, 
-                          Set()))),
-    timeoutBuffer: validators.mapBy(v => Set()),
+    msgBuffer: validators.mapBy(v => 
+      Set(Prop(build_proposal(  1, 
+                                build_block(Set(), "first block"),
+                                { id: 1, c: Set()}, 
+                                Set())))),
     activeTimeouts: validators.mapBy(v => Set()),
   }
 }
 
 
-
-
-pure def apply_effect (env: Environment, v: str, res: ConsensusResult): Environment =
+// CSMI
+/// Interface consensus algorithm / state machine: how consensus algorithm effects the environment 
+pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Environment =
 // TODO
   val new = { ... env, system: env.system.set(v, res.state) }
   res.output.fold(new, (s, x) => {
@@ -331,59 +400,88 @@ pure def apply_effect (env: Environment, v: str, res: ConsensusResult): Environm
     }
   })
 
-action apply_output(v: str, res: ConsensusResult) : bool = all {
-  s' = apply_effect(s, v, res)
-}
-
-// Example of acceleration: function that receives all votes
-// TODO: we should think about recording the consensus inputs
-pure def receive_all_votes (state: Environment, v: Address): Environment =
-  state.voteBuffer.get(v).fold(state, (s, vote) => {
-    val consumed_vote_state = { ... s, voteBuffer: s.voteBuffer.set(v, s.voteBuffer.get(v).exclude(Set(vote))) }
-    val res = consumed_vote_state.system.get(v).receive_vote(vote)
-    apply_effect(consumed_vote_state, v, res)
-  })
+// end of CSMI effect side
 
 
-action act_receive_some_vote (v: str) : bool = all {
-  s.voteBuffer.get(v) != Set(),
-  nondet vote = oneOf(s.voteBuffer.get(v))
-  val consumed_msg_state = { ... s, voteBuffer: s.voteBuffer.set(v, s.voteBuffer.get(v).exclude(Set(vote))) }
-  val res = consumed_msg_state.system.get(v).receive_vote(vote) 
-  apply_output(v, res)
-}
+//
+// General state machine
+//
 
-action act_receive_some_timeout (v: str) : bool = all {
-  s.timeoutBuffer.get(v) != Set(),
-  nondet tomsg = oneOf(s.timeoutBuffer.get(v))
-  val consumed_msg_state = { ... s, timeoutBuffer: s.timeoutBuffer.set(v, s.timeoutBuffer.get(v).exclude(Set(tomsg))) }
-  val res = consumed_msg_state.system.get(v).receive_timeout(tomsg)
-  apply_output(v, res)
-}
 
-action act_receive_some_proposal (v: str) : bool = all {
-  s.propBuffer.get(v) != Set(),
-  nondet prop = oneOf(s.propBuffer.get(v))
-  val consumed_msg_state = { ... s, propBuffer: s.propBuffer.set(v, s.propBuffer.get(v).exclude(Set(prop))) }
-  val res = consumed_msg_state.system.get(v).receive_proposal(prop)
-  apply_output(v, res)
+
+//
+// Standard interleaving semantics (one process receives one message/timeout in one action)
+//
+
+pure def receive_one_message (state: Environment, v: Address, msg: Message): Environment =
+  val consumed_msg_state = { ... state, msgBuffer: state.msgBuffer.set(v, state.msgBuffer.get(v).exclude(Set(msg))) }
+  val res = state.system.get(v).receive_message(msg)
+  apply_effect(state, v, res)
+
+
+pure def fire_one_timeout_event (state: Environment, v: Address, timeout: TimeoutEvent): Environment =
+  val consumed_timeout_state = { ... state, activeTimeouts: state.activeTimeouts.set(v, state.activeTimeouts.get(v).exclude(Set(timeout))) }
+  val res = consumed_timeout_state.system.get(v).fire_timeout_event(timeout)
+  apply_effect(consumed_timeout_state, v, res)
+
+action act_receive_some_msg (v: str) : bool = all {
+  s.msgBuffer.get(v) != Set(),
+  nondet msg = oneOf(s.msgBuffer.get(v))
+  s' = receive_one_message(s, v, msg)
 }
 
 action act_timeout (v: str) : bool = all {
-  s.activeTimeouts.get(v).filter(t => t == s.system.get(v).curView) != Set(),
-  val consumed_timeout_state = { ... s, activeTimeouts: s.activeTimeouts.put(v, Set()) } // TODO: check whether we want this semantics
-  val res = consumed_timeout_state.system.get(v).timeout_event()
-  apply_output(v, res)
+  s.activeTimeouts.get(v) != Set(),
+  nondet timeout = oneOf(s.activeTimeouts.get(v))
+  s' = fire_one_timeout_event(s, v, timeout)
 }
 
 action step =
   nondet v = oneOf(validators)
   any {
-    act_receive_some_vote(v),
-    act_receive_some_timeout(v),
-    act_receive_some_proposal(v),
+    act_receive_some_msg(v),
     act_timeout(v)
   }
+
+//
+// Accelerated semantics (multiple process may receive multiple messages/timeouts in one action)
+//
+
+/// Returns the new state after each message in the msgs map is delivered to the respective receiver
+pure def apply_acceleration_msgs (state: Environment, msgs: Address -> Set[Message]): Environment =
+  msgs.keys().fold(state, (s, v) => 
+    msgs.get(v).fold(s, (s2, msg) => 
+      receive_one_message(s2, v, msg) 
+    ))
+
+pure def apply_acceleration_timeout (state: Environment, timeouts: Address -> Set[TimeoutEvent]): Environment =
+  timeouts.keys().fold(state, (s, v) => 
+    timeouts.get(v).fold(s, (s2, timeout) => 
+      fire_one_timeout_event(s2, v, timeout)
+    ))
+
+// non-deterministically pick a set of processes. For each, non-deterministically pick a set of votes
+// and deliver them to the process in one action.
+action acceleration_msgs = 
+  nondet msgs = validators.map(v => s.msgBuffer.get(v).powerset().exclude(Set(Set())).map(m => (v, m)))
+                .flatten().powerset().oneOf()
+  val deliver = msgs.setToMap() 
+  s' =  apply_acceleration_msgs(s, deliver)
+
+action acceleration_timeouts = 
+  nondet timeouts = validators.map(v => s.activeTimeouts.get(v).powerset().exclude(Set(Set())).map(t => (v, t)))
+                .flatten().powerset().oneOf()
+  val deliver = timeouts.setToMap() 
+  s' =  apply_acceleration_timeout(s, deliver)
+
+
+action accelerated_step = any {
+  acceleration_msgs,
+  acceleration_timeouts,
+}  
+
+
+
 
 } // end of module monadbft
 
