@@ -53,7 +53,7 @@ type ConsensusOutput =
   | Commit(Proposal)
   | EarlyConfirmation(Proposal)
   | Confirmation(Proposal)
-  | SendVoteToNextLeader((Address, VoteMsg))
+  | SendVoteToNextLeader(VoteMsg)
 // Algorithm 5 has more responses
 
 type ConsensusResult = {
@@ -61,9 +61,10 @@ type ConsensusResult = {
   state: LocalState,
 }
 
+
 // CSMI
 // This initializes process that is identified by address
-pure def initialize_process (address: str): LocalState =
+pure def initialize_process (address: Address): LocalState =
   {
     high_tip: {
       view: -1,
@@ -408,7 +409,6 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
 //
 
 
-
 //
 // Standard interleaving semantics (one process receives one message/timeout in one action)
 //
@@ -424,13 +424,13 @@ pure def fire_one_timeout_event (state: Environment, v: Address, timeout: Timeou
   val res = consumed_timeout_state.system.get(v).fire_timeout_event(timeout)
   apply_effect(consumed_timeout_state, v, res)
 
-action act_receive_some_msg (v: str) : bool = all {
+action act_receive_some_msg (v: Address) : bool = all {
   s.msgBuffer.get(v) != Set(),
   nondet msg = oneOf(s.msgBuffer.get(v))
   s' = receive_one_message(s, v, msg)
 }
 
-action act_timeout (v: str) : bool = all {
+action act_timeout (v: Address) : bool = all {
   s.activeTimeouts.get(v) != Set(),
   nondet timeout = oneOf(s.activeTimeouts.get(v))
   s' = fire_one_timeout_event(s, v, timeout)
