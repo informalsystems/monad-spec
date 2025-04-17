@@ -156,23 +156,33 @@ pure def fire_one_timeout_event (state: Environment, v: ProcessID, timeout: Time
   val res = consumed_timeout_state.system.get(v).fire_timeout_event(timeout)
   apply_effect(consumed_timeout_state, v, res)
 
-action act_receive_some_msg (v: ProcessID) : bool = all {
-  s.msgBuffer.get(v) != Set(),
-  nondet msg = oneOf(s.msgBuffer.get(v))
+action act_receive_msg (v: ProcessID, msg: Message) : bool = all {
+  s.msgBuffer.get(v).contains(msg),
   s' = receive_one_message(s, v, msg)
 }
 
-action act_timeout (v: ProcessID) : bool = all {
+action act_receive_some_msg (v: ProcessID) : bool = all {
+  s.msgBuffer.get(v) != Set(),
+  nondet msg = oneOf(s.msgBuffer.get(v))
+  act_receive_msg(v, msg)
+}
+
+action act_timeout (v: ProcessID, timeout: TimeoutEvent) : bool = all {
+  s.activeTimeouts.get(v).contains(timeout),
+  s' = fire_one_timeout_event(s, v, timeout)
+}
+
+action act_some_timeout (v: ProcessID) : bool = all {
   s.activeTimeouts.get(v) != Set(),
   nondet timeout = oneOf(s.activeTimeouts.get(v))
-  s' = fire_one_timeout_event(s, v, timeout)
+  act_timeout(v, timeout)
 }
 
 action step =
   nondet v = oneOf(processes)
   any {
     act_receive_some_msg(v),
-    act_timeout(v)
+    act_some_timeout(v)
   }
 
 //
