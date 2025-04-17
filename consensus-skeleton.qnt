@@ -156,6 +156,7 @@ pure def fire_one_timeout_event (state: Environment, v: ProcessID, timeout: Time
   val res = consumed_timeout_state.system.get(v).fire_timeout_event(timeout)
   apply_effect(consumed_timeout_state, v, res)
 
+/// use this in REPL to let a process receive a specific message and take a step
 action act_receive_msg (v: ProcessID, msg: Message) : bool = all {
   s.msgBuffer.get(v).contains(msg),
   s' = receive_one_message(s, v, msg)
@@ -167,6 +168,7 @@ action act_receive_some_msg (v: ProcessID) : bool = all {
   act_receive_msg(v, msg)
 }
 
+/// use this in REPL to let a process fire a specific timeout and take a step
 action act_timeout (v: ProcessID, timeout: TimeoutEvent) : bool = all {
   s.activeTimeouts.get(v).contains(timeout),
   s' = fire_one_timeout_event(s, v, timeout)
