@@ -460,19 +460,18 @@ pure def apply_acceleration_timeout (state: Environment, timeouts: Address -> Se
       fire_one_timeout_event(s2, v, timeout)
     ))
 
-// TODO: this needs to be checked. 
 // non-deterministically pick a set of processes. For each, non-deterministically pick a set of votes
 // and deliver them to the process in one action.
 action acceleration_msgs = 
-  nondet vals = validators.powerset().oneOf()
-  val msgs = tuples(vals, s.msgBuffer.values()).filter(t => t._2.subseteq(s.msgBuffer.get(t._1)))
-  val deliver = msgs.setToMap() // I am mis-using this here. I want a non-deterministic choice
+  nondet msgs = validators.map(v => s.msgBuffer.get(v).powerset().exclude(Set(Set())).map(m => (v, m)))
+                .flatten().powerset().oneOf()
+  val deliver = msgs.setToMap() 
   s' =  apply_acceleration_msgs(s, deliver)
 
 action acceleration_timeouts = 
-  nondet vals = validators.powerset().oneOf()
-  val timeouts = tuples(vals, s.activeTimeouts.values()).filter(t => t._2.subseteq(s.activeTimeouts.get(t._1)))
-  val deliver = timeouts.setToMap() // I am mis-using this here. I want a non-deterministic choice
+  nondet timeouts = validators.map(v => s.activeTimeouts.get(v).powerset().exclude(Set(Set())).map(t => (v, t)))
+                .flatten().powerset().oneOf()
+  val deliver = timeouts.setToMap() 
   s' =  apply_acceleration_timeout(s, deliver)
 
 
