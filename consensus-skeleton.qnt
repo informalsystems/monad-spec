@@ -18,17 +18,23 @@ type ProcessID
 // CSMI-TODO
 type LocalState = {
   ProcessID: ProcessID,
-  // add more here
+  // CSMI-TODO: add more fields here, e.g., view, round, received_votes
 }
 
 // CSMI-TODO
 type Message
+  // CSMI-TODO: add here the message types of the algorithm
+  // e.g. Proposal, Prevote, Precommit, etc.
 
 // CSMI-TODO
 type TimeoutEvent
+  // CSMI-TODO: add here the timeout types of the algorithm
+  // e.g. TimeoutPrevote, TimeoutPrecommit, etc.
 
 // CSMI-TODO
 type ConsensusOutput
+  // CSMI-TODO: add here the output types of the algorithm
+  // e.g. SendMessageTo, BroadCastProposal, etc.
 
 type ConsensusResult = {
   output: Set[ConsensusOutput],
