@@ -368,7 +368,11 @@ var s: Environment
 action init = all {
   s' = {
     system: validators.mapBy(v => initialize_process(v)),
-    msgBuffer: validators.mapBy(v => Set()),
+    msgBuffer: validators.mapBy(v => 
+      Set(Prop(build_proposal(  1, 
+                                build_block(Set(), "first block"),
+                                { id: 1, c: Set()}, 
+                                Set())))),
     activeTimeouts: validators.mapBy(v => Set()),
   }
 }
@@ -376,7 +380,7 @@ action init = all {
 
 // CSMI
 /// Interface consensus algorithm / state machine: how consensus algorithm effects the environment 
-pure def apply_effect (env: Environment, v: str, res: ConsensusResult): Environment =
+pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Environment =
 // TODO
   val new = { ... env, system: env.system.set(v, res.state) }
   res.output.fold(new, (s, x) => {
