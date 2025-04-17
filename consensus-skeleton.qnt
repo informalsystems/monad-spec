@@ -22,9 +22,10 @@ type LocalState = {
 }
 
 // CSMI-TODO
-type Message
+type Message =
   // CSMI-TODO: add here the message types of the algorithm
   // e.g. Proposal, Prevote, Precommit, etc.
+  | Propose // this could carry data in an argument
 
 // CSMI-TODO
 type TimeoutEvent
@@ -32,7 +33,8 @@ type TimeoutEvent
   // e.g. TimeoutPrevote, TimeoutPrecommit, etc.
 
 // CSMI-TODO
-type ConsensusOutput
+type ConsensusOutput = 
+  | Broadcast(Message)
   // CSMI-TODO: add here the output types of the algorithm
   // e.g. SendMessageTo, BroadCastProposal, etc.
 
@@ -54,14 +56,17 @@ pure def receive_message(state: LocalState, msg: Message): ConsensusResult =
   // CSMI-TODO: add here the message handlers of the algorithm
   // e.g. if msg leads to sending another message m, then add a corresponding entry to output
   // and return the new state of the node
-  { state: state, output: Set() }
+  match msg {
+    | Propose => { state: state, output: Set() } // CSMI-TODO: add more here
+  }
+
 
 
 // CSMI-TODO
 // This is the function that contains all the timeout handlers of the algorithm
 pure def fire_timeout_event(state: LocalState, timeout: TimeoutEvent): ConsensusResult =
   // CSMI-TODO: add here the timeout handlers of the algorithm
-  // e.g. if timeout leads to sending go to a new round and send a message m, then 
+  // e.g. if timeout leads to go to a new round and send a message m, then 
   // return the state of the node with the new round number and add an entry for sending the
   // message to output
   { state: state, output: Set() }
@@ -100,25 +105,28 @@ var s: Environment
 //
 //
 
+
 // CSMI-TODO 
 // This specification is event triggered, so a process step can only be triggered by a message or a timeout
 // as a result we need either messages or timeouts in the initial state
-action init = all {
-  s' = {
-    system: processes.mapBy(v => initialize_process(v)),
+pure def initial_global_state: Environment =
+  { system: processes.mapBy(v => initialize_process(v)),
     msgBuffer: processes.mapBy(v => Set()),
     activeTimeouts: processes.mapBy(v => Set()),
   }
-}
 
 
 // CSMI-TODO
 /// Interface consensus algorithm / state machine: how consensus algorithm effects the environment 
 pure def apply_effect (env: Environment, v: ProcessID, res: ConsensusResult): Environment =
-  val new = { ... env, system: env.system.set(v, res.state) }
+  val new = { ... env, system: env.system.set(v, res.state) } // update the state of the process
+  res.output.fold(new, (s, o) => 
+    match o {
+      | Broadcast(msg) => { ... new, msgBuffer: processes.mapBy(p => new.msgBuffer.get(p).union(Set(msg)))} // add the message to the buffer
+    })
   // CSMI-TODO: add here the effect of the consensus algorithm on the environment
   // e.g. { ... new, msgBuffer: new.msgBuffer.set(v, new.msgBuffer.get(v).union(res.output)) }
-  new 
+  
   
 
 
@@ -129,6 +137,9 @@ pure def apply_effect (env: Environment, v: ProcessID, res: ConsensusResult): En
 // General state machine
 //
 
+action init = all {
+  s' = initial_global_state
+}
 
 //
 // Standard interleaving semantics (one process receives one message/timeout in one action)
