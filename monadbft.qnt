@@ -4,72 +4,84 @@ module monadbft {
   import basicSpells.* from "./basicSpells"
 
   val ERROR_CODE = (-256)
+  val NO_HIGH_TIP = (-255)
 
 //
 // Data structures (page 8)
 //
 
-type QC = Set[VoteMsg]           // TODO 2f+1
 type Proposal_ID = {seq: int, view: int, byzantine: int} 
+type Signature = Address // let's just add the sender address as a signature
+type ProposalID = int
 
-/// Implementation of the `view` function for a quorum certificate.
-pure def view(qc: QC): int = {
-  // First, check that the QC is not empty.
-  if (qc == Set()) ERROR_CODE
-  else {
-    // Extract the set of view numbers from each vote message in the QC.
-    val views = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.view))
-    // If the QC is well-formed all vote messages should share the same view.
-    if (views.size() != 1) ERROR_CODE
-    else views.getOnlyElement()
-    }
+
+/// ⟨view, proposal id, block header, σ, nec⟩ (page 8)
+type Tip = {
+  view: int,
+  proposal_id: ProposalID,
+  block_header: BlockHeader,
+  sigma: Signature,
+  nec: Option[NEC],
+  tip_id: int, // added to avoid recursive data types
 }
 
-pure def get_seq(qc: QC): int = {
-  if (qc == Set()) ERROR_CODE
-  else {
-    // Extract the set of view numbers from each vote message in the QC.
-    val seqs = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.seq))
-    // If the QC is well-formed all vote messages should share the same view.
-    if (seqs.size() != 1) ERROR_CODE
-    else seqs.getOnlyElement()
-    }
+/// ⟨view, seq, proposal id, state hash, σ⟩ (page 8)
+type VoteMsg = {
+  view: int,
+  seq: int,
+  proposal_id: ProposalID,
+  state_hash: int,
+  sigma: Signature,
 }
 
-pure def proposal_id(qc: QC): int = {
-  if (qc == Set()) ERROR_CODE
-  else {
-    val ids = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.proposal_id))
-    if (ids.size() != 1) ERROR_CODE
-    else ids.getOnlyElement() 
-  }
+/// ⟨view, highqc_view, σ⟩ (page 9)
+type NoEndorsementMsg = {
+  view: int,
+  highqc_view: int,
+  sigma: Signature,
 }
 
-/// Hash is modeled as id
-pure def hash(s: str): str = {
-  s
+/// ⟨view, tip, tc, σ⟩ (page 9)
+type TimeoutMsg = {
+  view: int,
+  tip: Tip,
+  tc: TCAux,  // timeout certificate use tc.view. Needed to avoid cyclic data type
+  sigma: Signature,
 }
 
-pure def parent (qc1: QC, qc2: QC): bool =
-  // TODO check if qc1 is a parent of qc2
-  true
+/// ⟨view, seq, proposal id, state hash, Σ⟩ (page 8)
+type QC = {
+  c: Set[VoteMsg],       // TODO 2f+1
+  view: int,
+  seq: int,
+  proposal_id: ProposalID,
+  state_hash: int,
+  sigma: Signature, 
+} 
 
-pure def extend (qc1: QC, qc2: QC): bool =
-  // TODO 
-  true
-
-pure def conflicting_qcs (qc1: QC, qc2: QC): bool =
-  // TODO check if qc1 and qc2 are conflicting
-  and {
-    not(extend(qc1, qc2)),
-    not(extend(qc2, qc1)),
-  }
-
+/// TC = ⟨view, tips, high_tip, Σ⟩ (page 9)
 type TC = {
   id: int,                 // TODO unique id to identify the TC. Otherwise recursive data type
-  c: Set[TimeoutMsg]       // TODO 2f+1
+  view: int,
+  high_tip: Tip,
+  tips: Set[Tip],
+  sigma: Signature,
+  c: Set[TimeoutMsg],       // TODO 2f+1 
 }
-type NEC = Set[NoEndorsementMsg] // TODO f+1
+
+/// Auxiliary type for timeout certificate to avoid circular data types 
+type TCAux = {
+  id: int,
+  view: int,
+}
+
+/// ⟨view, highqc view, Σ⟩ (page 9)
+type NEC = {
+  view: int,
+  highqc_view: int,
+  sigma: Signature,
+  c: Set[NoEndorsementMsg]
+}
 
 type Block = {
   seq: int,
@@ -86,17 +98,111 @@ type BlockHeader = {
   block_hash: int
 }
 
-type Signature = Address // let's just add the sender address as a signature
-type ProposalID = int
-
+/// ⟨view, proposal id, block, σ, tc, nec⟩ (page 8)
 type Proposal = {
   view: int,
   proposal_id: Proposal_ID,
   block: Block,
   sigma: Signature,
-  tc: TC,
-  nec: NEC,
+  tc: Option[TC],
+  nec: Option[NEC],
 }
+
+type Address = str
+type Ledger = List[Proposal] 
+
+type LocalState = {
+  // Variables from Algorithm 2
+  high_tip: Option[Tip],
+  last_tc: TC,
+  curView: int,
+  ledger: Ledger,
+  highest_voted_view: int,
+  // recovering? perhaps Set[int] encoding the views where it is true
+  // Variables from Algorithm 4
+  votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
+  // TODO: this is not in the paper, but we need it to identify the process
+  address: Address, 
+}
+
+/*
+/// Extract the view out of a certificate
+pure def get_view(cert) = {
+  // First, check that the certificate is not empty.
+  if (cert == Set()) ERROR_CODE
+  else {
+    // Extract the set of view numbers from each vote message in the certificate.
+    val views = cert.fold(Set(), (acc, m) => acc.setAdd(m.view))
+    // If the certificate is well-formed all vote messages should share the same view.
+    if (views.size() != 1) ERROR_CODE
+    else views.getOnlyElement()
+  }
+}
+
+/// Extract the sequence number of votes out of a quorum certificate
+pure def get_seq_qc(qc: QC): int = {
+  if (qc == Set()) ERROR_CODE
+  else {
+    // Extract the set of view numbers from each vote message in the QC.
+    val seqs = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.seq))
+    // If the QC is well-formed all vote messages should share the same view.
+    if (seqs.size() != 1) ERROR_CODE
+    else seqs.getOnlyElement()
+    }
+}
+
+/// Extract the proposal id out of a quorum certificate
+pure def get_proposal_id_qc(qc: QC): int = {
+  if (qc == Set()) ERROR_CODE
+  else {
+    val ids = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.proposal_id))
+    if (ids.size() != 1) ERROR_CODE
+    else ids.getOnlyElement() 
+  }
+}
+
+pure def get_highqc_view_nec(nec: NEC): int = {
+  if (nec == Set()) ERROR_CODE
+  else {
+    val views = nec.fold(Set(), (acc, m) => acc.setAdd(m.view))
+    if (views.size() != 1) ERROR_CODE
+    else views.getOnlyElement()
+  }
+}
+*/
+
+/// Hash is modeled as id
+pure def hash(s: str): str = {
+  s
+}
+
+/// Compare two quorum certificates
+pure def compare_qc(qc1: QC, qc2: QC): bool =
+  and {
+    qc1.view == qc2.view,
+    qc1.seq == qc2.seq,
+    qc1.proposal_id == qc2.proposal_id,
+    qc1.state_hash == qc2.state_hash,
+    qc1.sigma == qc2.sigma,
+    qc1.c.size() == qc2.c.size(),
+    qc1.c.fold(true, (acc, x) => acc and qc2.c.contains(x)),
+  }
+
+
+pure def parent (qc1: QC, qc2: QC): bool =
+  // TODO check if qc1 is a parent of qc2
+  true
+
+pure def extend (qc1: QC, qc2: QC): bool =
+  // TODO 
+  true
+
+pure def conflicting_qcs (qc1: QC, qc2: QC): bool =
+  // TODO check if qc1 and qc2 are conflicting
+  and {
+    not(extend(qc1, qc2)),
+    not(extend(qc2, qc1)),
+  }
 
 pure def conflicting_props (p1: Proposal, p2: Proposal): bool =
   and {
@@ -105,47 +211,13 @@ pure def conflicting_props (p1: Proposal, p2: Proposal): bool =
 
   }
 
-// TODO Fresh proposal
-// TODO Reproposal
 
-type VoteMsg = {
-  view: int,
-  seq: int,
-  proposal_id: ProposalID,
-  state_hash: int,
-  sigma: Signature,
+/// Extract the tips from a set of timeout messages
+/// This function retruns a set of Tip. 
+pure def get_tips_from_timeouts(msgs: Set[TimeoutMsg]): Set[Tip]= {
+  msgs.fold(Set(), (acc, msg) => acc.setAdd(msg.tip))
 }
 
-type Tip = {
-  view: int,
-  proposal_id: ProposalID,
-  block_header: BlockHeader,
-  sigma: Signature,
-  nec: NEC,
-  tip_id: int, // added to avoid recursive data types
-}
-
-pure def high_tip (tips: Set[Tip]): Tip =
-  // TODO a tip with the highest view
-  tips.getOnlyElement()
-
-type NoEndorsementMsg = {
-  view: int,
-  highqc_view: int,
-  sigma: Signature,
-}
-
-type TCAux = {
-  id: int,
-  view: int, // This is to just add the data that we need in Alg 4 line 4
-}
-
-type TimeoutMsg = {
-  view: int,
-  tip: int, //
-  tc: TCAux,  // timeout certificate use tc.view. Needed due to cyclic data type
-  sigma: Signature,
-}
 
 //
 // Algorithm 1 (page 13)
@@ -155,7 +227,7 @@ type TimeoutMsg = {
 /// Pseudocode reference: Algorithm 1, page 13 (line 1)
 pure def build_block(qc: QC, payload: str): Block =
   {
-  seq: get_seq(qc) + 1,
+  seq: qc.seq + 1,
   payload: payload,
   payload_hash: hash(payload),
   qc: qc,
@@ -178,46 +250,86 @@ pure def build_proposal(view: int, block: Block, tc: TC, nec: NEC): Proposal = {
 
 /// Check if the proposal is safe
 /// Pseudocode reference: Algorithm 1, page 13 (line 10)
-pure def safety_check(p: Proposal): bool =
-  // TODO check if the proposal is safe
-  true
+pure def safety_check(p: Proposal): bool = {
+  if (p.block.seq != p.block.qc.seq + 1) //Question: typo in the paper (line 11)
+    false
+  else if (p.view == p.block.qc.view + 1)
+    true
+  else if (p.tc != None and p.view == p.tc.unwrap().view + 1){
+    if ((p.block.qc != p.tc.high_tip.block.qc) or 
+        (p.tc.unwrap().high_tip != find_high_tip(p.tc)))
+      false
+    else if (p.nec != None)
+     and {
+        p.nec.unwrap().view == p.view,
+        p.nec.unwrap().highqc_view == p.block.qc.view,
+      }
+    else (p.block.block_hash == p.tc.high_tip.block.block_hash)
+  }
+  else false
+}
+  
+//
+// Algorithm 3 (page 16)
+//
+
+/// Utility: find the tip with the highest view out of a set of tip
+pure def highest_tip (tips: Set[Tip]): Tip = {
+  // argmax (t∈tips) t.view 
+  val max_tip = tips.fold(tips.getOnlyElement(), (acc, t) => {
+    if (t.view > acc.view) t
+    else acc
+  })
+  max_tip
+}
+
+// Alg 3 line 11
+pure def verify_fresh_proposal(tip: Tip): bool ={
+  if (tip.view == tip.block_header.qc.view + 1)
+    true
+  else match tip.nec {
+    | None =>
+        false
+    | Some(nec) =>
+      and {
+      tip.view == nec.view,
+      tip.block_header.qc.view == nec.highqc_view,
+    }
+  }
+}
+
+
+/// Alg 3 line 1
+/// Question: the side effects of this function seem wrong.
+pure def find_high_tip(tc: TC): Option[Tip] = {
+  val tips = tc.tips
+  // The first if else block (L3 -> L7) is skipped because until we figure out if
+  // we need it
+
+  if (not (tips.forall(t => t.verify_fresh_proposal()))) None
+  else {
+    // argmax (t∈tips) t.view
+    val max_tip = highest_tip(tips)
+    Some(max_tip)
+  }
+}
+
+
 
 pure def update_tip(p: Proposal): int =
 // TODO: returns tip (not tip_id) in the paper
-  if (p.view == p.block.qc.view() + 1 or p.nec != Set())
-    p.tc.id // TODO: spec says "tip of p"
-  else
-    find_high_tip(p.tc) 
+  1
 
 pure def parent_id (p: Proposal): int =
 // cut down the QC to a singleton
-  p.block.qc.proposal_id()
+  p.block.qc.proposal_id
 
 
 //
 // Algorithm 2 (page 15)
 //
 
-type Ledger = List[Proposal] // TODO: what is the ledger? Alg 2 line 45
-
-type Address = str
-
-type LocalState = {
-  // Variables from Algorithm 2
-  high_tip: Tip,
-  last_tc: TC,
-  curView: int,
-  ledger: Ledger,
-  highest_voted_view: int,
-  // recovering? perhaps Set[int] encoding the views where it is true
-
-  // Variables from Algorithm 4
-  votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
-
-  // TODO: this is not in the paper, but we need it to identify the process
-  address: Address, 
-}
-
+/*
 pure def initialize_process (address: str): LocalState =
   {
     high_tip: {
@@ -243,6 +355,7 @@ pure def initialize_process (address: str): LocalState =
     votes: Map(), 
     address: address,
   }
+*/
 
 pure def is_leader(s: LocalState): bool =
   // TODO check if the node is the leader
@@ -292,22 +405,6 @@ pure def timeout_event (s: LocalState): ConsensusResult =
 
 
 //
-// Algorithm 3 (page 16)
-//
-
-// Alg 3 line 1
-pure def find_high_tip (tc: TC): int =
-  // TODO
-  tc.id
-
-
-// Alg 3 line 11
-pure def verify_fresh_proposal(tip: Tip): bool =
-  // TODO check if the proposal is fresh
-  true
-
-
-//
 // Alg 5 (page 26)
 //
 
@@ -335,7 +432,7 @@ var s: Environment
 // TODO: I think we need to preload with a vote message towards the proposer
 action init = all {
   s' = {
-    system: validators.mapBy(v => initialize_process(v)),
+    system: validators.mapBy(v => v), //initialize_process(v)),
     voteBuffer: validators.mapBy(v => Set()),
     propBuffer: validators.mapBy(v => 
       Set(build_proposal( 1, 

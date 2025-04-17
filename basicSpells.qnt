@@ -350,4 +350,11 @@ module basicSpells {
     assert(findFirst([1, 2, 3], x => x > 1) == Some(2)),
     assert(findFirst([1, 2, 3], x => x == 4) == None),
   }
+
+  pure def unwrap(value: Option[a]): a = {
+    match value {
+      | None => Map().get(value)
+      | Some(x) => x
+    }
+  }
 }
