@@ -1,18 +1,20 @@
 // -*- mode: Bluespec; -*-
 
 module monadbft {
-  import basicSpells.* from "./basicSpells"
 
-  val ERROR_CODE = (-256)
-  val NO_HIGH_TIP = (-255)
+import basicSpells.* from "./basicSpells"
+
+val BLOCK_PAYLOAD = "VALID_TRANSACTION" //TODO: this is just a placeholder
 
 //
 // Data structures (page 8)
 //
 
-type Proposal_ID = {seq: int, view: int, byzantine: int} 
+type Address = str
+type Ledger = List[Proposal] 
+type ProposalID = {seq: int, view: int, byzantine: int} 
 type Signature = Address // let's just add the sender address as a signature
-type ProposalID = int
+type StateHash = List[ProposalID]
 
 
 /// ⟨view, proposal id, block header, σ, nec⟩ (page 8)
@@ -51,22 +53,22 @@ type TimeoutMsg = {
 
 /// ⟨view, seq, proposal id, state hash, Σ⟩ (page 8)
 type QC = {
-  c: Set[VoteMsg],       // TODO 2f+1
+  c: Set[VoteMsg],       
   view: int,
   seq: int,
   proposal_id: ProposalID,
-  state_hash: int,
+  state_hash: StateHash,
   sigma: Signature, 
 } 
 
 /// TC = ⟨view, tips, high_tip, Σ⟩ (page 9)
 type TC = {
-  id: int,                 // TODO unique id to identify the TC. Otherwise recursive data type
+  //id: int,          // TODO This might not be needed
   view: int,
-  high_tip: Tip,
+  high_tip: Option[Tip],  
   tips: Set[Tip],
   sigma: Signature,
-  c: Set[TimeoutMsg],       // TODO 2f+1 
+  c: Set[TimeoutMsg],       
 }
 
 /// Auxiliary type for timeout certificate to avoid circular data types 
@@ -83,37 +85,43 @@ type NEC = {
   c: Set[NoEndorsementMsg]
 }
 
+type BlockHash = {
+  seq: int,
+  payload_hash: str,
+  qc: QC
+}
+
+/// ⟨seq, payload, payload hash, qc, block hash⟩ (page 8)
 type Block = {
   seq: int,
   payload: str,
   payload_hash: str,
   qc: QC,
-  block_hash: int
+  block_hash: BlockHash
 }
 
+/// ⟨seq, payload hash, qc, block hash⟩ (page 8)
 type BlockHeader = {
   seq: int,
   payload_hash: str,
   qc: QC,
-  block_hash: int
+  block_hash: BlockHash
 }
 
 /// ⟨view, proposal id, block, σ, tc, nec⟩ (page 8)
 type Proposal = {
   view: int,
-  proposal_id: Proposal_ID,
+  proposal_id: ProposalID,
   block: Block,
   sigma: Signature,
   tc: Option[TC],
   nec: Option[NEC],
 }
 
-type Address = str
-type Ledger = List[Proposal] 
-
 type LocalState = {
   // Variables from Algorithm 2
-  high_tip: Option[Tip],
+  high_tip: Option[Tip], //NB: sure this is an option
+  tip: Option[Tip], //NB: sure this is an option
   last_tc: TC,
   curView: int,
   ledger: Ledger,
@@ -121,82 +129,48 @@ type LocalState = {
   // recovering? perhaps Set[int] encoding the views where it is true
   // Variables from Algorithm 4
   votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
-  // TODO: this is not in the paper, but we need it to identify the process
-  address: Address, 
+  proposals: Set[Proposal],
+  timeouts : int -> Set[TimeoutMsg],
+  broadcast_timeout: int -> bool,
+  address: Address,   //This is not in the paper, but we need it to identify the process
 }
 
-/*
-/// Extract the view out of a certificate
-pure def get_view(cert) = {
-  // First, check that the certificate is not empty.
-  if (cert == Set()) ERROR_CODE
-  else {
-    // Extract the set of view numbers from each vote message in the certificate.
-    val views = cert.fold(Set(), (acc, m) => acc.setAdd(m.view))
-    // If the certificate is well-formed all vote messages should share the same view.
-    if (views.size() != 1) ERROR_CODE
-    else views.getOnlyElement()
-  }
-}
+//
+// Utility functions
+//
 
-/// Extract the sequence number of votes out of a quorum certificate
-pure def get_seq_qc(qc: QC): int = {
-  if (qc == Set()) ERROR_CODE
-  else {
-    // Extract the set of view numbers from each vote message in the QC.
-    val seqs = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.seq))
-    // If the QC is well-formed all vote messages should share the same view.
-    if (seqs.size() != 1) ERROR_CODE
-    else seqs.getOnlyElement()
-    }
-}
-
-/// Extract the proposal id out of a quorum certificate
-pure def get_proposal_id_qc(qc: QC): int = {
-  if (qc == Set()) ERROR_CODE
-  else {
-    val ids = qc.fold(Set(), (acc, vote) => acc.setAdd(vote.proposal_id))
-    if (ids.size() != 1) ERROR_CODE
-    else ids.getOnlyElement() 
-  }
-}
-
-pure def get_highqc_view_nec(nec: NEC): int = {
-  if (nec == Set()) ERROR_CODE
-  else {
-    val views = nec.fold(Set(), (acc, m) => acc.setAdd(m.view))
-    if (views.size() != 1) ERROR_CODE
-    else views.getOnlyElement()
-  }
-}
-*/
-
-/// Hash is modeled as id
+/// Hash is modeled as id for payloads
 pure def hash(s: str): str = {
   s
 }
 
-/// Compare two quorum certificates
-pure def compare_qc(qc1: QC, qc2: QC): bool =
-  and {
-    qc1.view == qc2.view,
-    qc1.seq == qc2.seq,
-    qc1.proposal_id == qc2.proposal_id,
-    qc1.state_hash == qc2.state_hash,
-    qc1.sigma == qc2.sigma,
-    qc1.c.size() == qc2.c.size(),
-    qc1.c.fold(true, (acc, x) => acc and qc2.c.contains(x)),
+/// Block hash is modeled as a tuple of the block seq, the payload hash and the qc 
+pure def hash_block(seq: int, payload_hash: str, qc: QC): BlockHash = {
+  {
+    seq: seq,
+    payload_hash: payload_hash,
+    qc: qc,
   }
+}
+
+/// Cryptographic hash to the post‐execution state
+/// Modeled here as the ordered list of executed proposal ids
+pure def state_hash(s: LocalState) : StateHash = {
+  s.ledger.foldl(List(), (acc, p) => acc.append(p.proposal_id))
+}
 
 
+/// Check if qc1 is a parent of qc2
 pure def parent (qc1: QC, qc2: QC): bool =
   // TODO check if qc1 is a parent of qc2
   true
 
+/// Check if qc1 extends qc2
 pure def extend (qc1: QC, qc2: QC): bool =
   // TODO 
   true
 
+/// Check if two QCs are conflicting
 pure def conflicting_qcs (qc1: QC, qc2: QC): bool =
   // TODO check if qc1 and qc2 are conflicting
   and {
@@ -204,6 +178,7 @@ pure def conflicting_qcs (qc1: QC, qc2: QC): bool =
     not(extend(qc2, qc1)),
   }
 
+/// Check if two proposals are conflicting
 pure def conflicting_props (p1: Proposal, p2: Proposal): bool =
   and {
     not(extend(p1.block.qc, p2.block.qc)),
@@ -218,62 +193,7 @@ pure def get_tips_from_timeouts(msgs: Set[TimeoutMsg]): Set[Tip]= {
   msgs.fold(Set(), (acc, msg) => acc.setAdd(msg.tip))
 }
 
-
-//
-// Algorithm 1 (page 13)
-//
-
-/// BuildBlock function
-/// Pseudocode reference: Algorithm 1, page 13 (line 1)
-pure def build_block(qc: QC, payload: str): Block =
-  {
-  seq: qc.seq + 1,
-  payload: payload,
-  payload_hash: hash(payload),
-  qc: qc,
-  block_hash: 0 //TODO: what to put here 
-}
-
-/// Form a proposal out of a block and a set of certificates
-/// Pseudocode reference: Algorithm 1, page 13 (line 6)
-pure def build_proposal(view: int, block: Block, tc: TC, nec: NEC): Proposal = {
-  val id = {seq: block.seq, view: view, byzantine: 0}
-  {
-    view: view,
-    proposal_id: id,
-    block: block,
-    sigma: "",
-    tc: tc,
-    nec: nec,
-  }
-}
-
-/// Check if the proposal is safe
-/// Pseudocode reference: Algorithm 1, page 13 (line 10)
-pure def safety_check(p: Proposal): bool = {
-  if (p.block.seq != p.block.qc.seq + 1) //Question: typo in the paper (line 11)
-    false
-  else if (p.view == p.block.qc.view + 1)
-    true
-  else if (p.tc != None and p.view == p.tc.unwrap().view + 1){
-    if ((p.block.qc != p.tc.high_tip.block.qc) or 
-        (p.tc.unwrap().high_tip != find_high_tip(p.tc)))
-      false
-    else if (p.nec != None)
-     and {
-        p.nec.unwrap().view == p.view,
-        p.nec.unwrap().highqc_view == p.block.qc.view,
-      }
-    else (p.block.block_hash == p.tc.high_tip.block.block_hash)
-  }
-  else false
-}
-  
-//
-// Algorithm 3 (page 16)
-//
-
-/// Utility: find the tip with the highest view out of a set of tip
+/// Find the tip with the highest view out of a set of tip
 pure def highest_tip (tips: Set[Tip]): Tip = {
   // argmax (t∈tips) t.view 
   val max_tip = tips.fold(tips.getOnlyElement(), (acc, t) => {
@@ -283,7 +203,138 @@ pure def highest_tip (tips: Set[Tip]): Tip = {
   max_tip
 }
 
-// Alg 3 line 11
+/// Extract the block header out of a block
+pure def header_from_block(b: Block): BlockHeader = {
+  {
+    seq: b.seq,
+    payload_hash: b.payload_hash,
+    qc: b.qc,
+    block_hash: b.block_hash,
+  }
+}
+
+/// Build a TC out of a set of timeout messages
+pure def build_tc(timeouts: Set[TimeoutMsg], addr: Address): TC = {
+  {
+    c: timeouts,
+    view: timeouts.getOnlyElement().view,
+    high_tip: Some(timeouts.getOnlyElement().tip),
+    tips: get_tips_from_timeouts(timeouts),
+    sigma: addr,
+  }
+}
+
+/// Build a QC out of a set of votes
+pure def build_qc(votes: Set[VoteMsg], addr: Address, state_hash: StateHash): QC = {
+  val id = {seq: votes.getOnlyElement().seq, view: votes.getOnlyElement().view, byzantine: 0}
+  {
+    c: votes,
+    view: votes.getOnlyElement().view,
+    seq: votes.getOnlyElement().seq,
+    proposal_id: id,
+    state_hash: state_hash,
+    sigma: addr,
+  }
+}
+
+/// Get a proposal based on the proposal id
+pure def get_proposal(id: ProposalID, proposals: Set[Proposal] ): Proposal =
+ proposals.filter(p => p.proposal_id == id).getOnlyElement()
+
+
+/// Execute the proposal
+/// TODO: redesign this function
+pure def execute_block(s: LocalState, p: Proposal): Ledger = {
+  append(s.ledger, p)
+}
+
+
+//
+// Algorithm 1 (page 13)
+//
+
+/// Alg 1, line 1
+/// Form a block out of a QC and a payload
+pure def build_block(qc: QC, payload: str): Block =
+{
+  seq: qc.seq + 1,
+  payload: payload,
+  payload_hash: hash(payload),
+  qc: qc,
+  block_hash: hash_block(qc.seq + 1, hash(payload), qc),
+}
+
+
+
+/// Algorithm 1, page 13 (line 6)
+/// Form a proposal out of a block and a set of certificates
+pure def build_proposal(view: int, block: Block, tc: Option[TC], nec: Option[NEC], addr: Address): Proposal = {
+  val id = {seq: block.seq, view: view, byzantine: 0}
+  {
+    view: view,
+    proposal_id: id,
+    block: block,
+    sigma: addr,
+    tc: tc,
+    nec: nec,
+  }
+}
+
+/// Alg 1, line 10
+/// Confirm the proposal continues from the last certified block.
+/// It then accepts proposals made under normal operation, when the leader advances without any timeouts.
+/// In recovery after a timeout, it only accepts either the reproposal of the highest‐tip block or, if that block couldn’t be recovered, a new block justified by a No‑Endorsement Certificate.
+pure def safety_check(p: Proposal): bool = {
+  if (p.block.seq != p.block.qc.seq + 1) //Warning: typo in the paper (line 11)
+    false
+  else if (p.view == p.block.qc.view + 1)
+    true
+  else if (p.tc != None and p.view == p.tc.unwrap().view + 1){
+    val p_tc = p.tc.unwrap()
+    if (
+      or {p.block.qc != p_tc.high_tip.unwrap().block_header.qc, // The unwrap will throw an error if the option is None, but it should not be
+        p_tc.high_tip != find_high_tip(p_tc)}
+      )
+      false
+    else if (p.nec != None)
+     and {
+        p.nec.unwrap().view == p.view,
+        p.nec.unwrap().highqc_view == p.block.qc.view,
+      }
+    else (p.block.block_hash == p_tc.high_tip.unwrap().block_header.block_hash) // The unwrap will throw an error if the option is None, but it should not be
+  }
+  else false
+}
+
+/// Alg 1 line 22
+pure def update_tip(p: Proposal): Option[Tip] = {
+  if (p.view == p.block.qc.view + 1 or p.nec != None)
+    val p_tip = {
+        view: p.view,
+        proposal_id: p.proposal_id,
+        block_header: p.block.header_from_block(),
+        sigma: p.sigma,
+        nec: p.nec,
+        tip_id: 0, // TODO: Update this 
+      }
+    Some(p_tip)
+  else
+    find_high_tip(p.tc.unwrap()) // TODO: Question? why there is no check for none TC 
+}     
+    
+/// Alg 1 line 26
+pure def parent_id (p: Proposal): ProposalID =
+  p.block.qc.proposal_id
+
+
+//
+// Algorithm 3 (page 16)
+//
+
+/// Alg 3 line 11
+/// Returns true only if a tip represents a “fresh” proposal:
+///   - A happy‑path proposal where tip.view == tip.block.qc.view+1, or
+///   - A NEC‑driven proposal where tip.nec.view == tip.view && tip.nec.highqc_view == tip.block.qc.view
 pure def verify_fresh_proposal(tip: Tip): bool ={
   if (tip.view == tip.block_header.qc.view + 1)
     true
@@ -300,12 +351,14 @@ pure def verify_fresh_proposal(tip: Tip): bool ={
 
 
 /// Alg 3 line 1
-/// Question: the side effects of this function seem wrong.
+/// Gathers all validator tips from a timeout certificate or timeout messages.
+///   - It aborts and returns nil if any tip fails the fresh‑proposal checks.
+///   - Otherwise, it picks and returns the tip with the highest view number.
+/// Warning: the side effects of this function seem wrong.
 pure def find_high_tip(tc: TC): Option[Tip] = {
   val tips = tc.tips
   // The first if else block (L3 -> L7) is skipped because until we figure out if
   // we need it
-
   if (not (tips.forall(t => t.verify_fresh_proposal()))) None
   else {
     // argmax (t∈tips) t.view
@@ -316,13 +369,68 @@ pure def find_high_tip(tc: TC): Option[Tip] = {
 
 
 
-pure def update_tip(p: Proposal): int =
-// TODO: returns tip (not tip_id) in the paper
-  1
+//
+// Algorithm 4 (page 22)
+//
 
-pure def parent_id (p: Proposal): int =
-// cut down the QC to a singleton
-  p.block.qc.proposal_id
+
+/// Alg 4 line 2
+/// Update the local state with a new view
+/// We pass view instead of cert to simplify the code.
+/// We remove the timer start/stop as we don't model them in Quint.
+pure def increment_view(view: int, s: LocalState): LocalState = {
+  if (view >= s.curView)
+    { ... s, curView: view } // Increment view to next
+  else
+    s
+}
+
+
+/// Alg 4 line 10
+pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , LocalState) = {
+  val v = t.view
+
+  if (v < s.curView) (None, s)
+  else {
+    val s1 = increment_view(t.tip.block_header.qc.view, s)
+    val s2 = increment_view(t.tc.view, s1)
+    // Timeout is new, let's accumulate it
+    val acc_timeouts = s2.timeouts.getOrElse(v, Set()).setAdd(t)
+    val s3 = {...s2, timeouts: s2.timeouts.put(v, acc_timeouts)}
+    // Check if we have a quorum
+    if (acc_timeouts.size() >= Q) {
+      val tc = build_tc(acc_timeouts, s3.address)
+      (Some(tc), increment_view(tc.view, s3))
+    }
+    else if(acc_timeouts.size() >= F + 1 and not (s3.broadcast_timeout.getOrElse(v, false))) {
+      // TODO: TRIGGER TIMEOUT EVENT
+      (None, {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)})
+    }
+    else (None, s3)
+  }
+}
+
+
+/// Alg 4 line 25
+pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC],LocalState) = {
+  val v = vote.view
+  val id = vote.proposal_id
+  
+  if (v < s.curView) (None,s)
+  else {
+    // Vote is new, let's accumulate it
+    val acc_votes = s.votes.getOrElse(id, Set()).setAdd(vote)
+    val new_state = {...s, votes: s.votes.put(id, acc_votes)}
+    // Check if we have a quorum
+    if (acc_votes.size() >= Q) {
+      val qc = build_qc(acc_votes, s.address, state_hash(new_state))
+      (Some(qc), increment_view(qc.view, new_state))
+    }
+    else (None, new_state)
+    }
+  }
+
+
 
 
 //
@@ -376,27 +484,96 @@ type ConsensusResult = {
 }
 
 
-// Alg 2 line 3
-pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult =
-  // TODO
-  { state: s, output: Set() }
+/// Alg 2 line 3 (Only for the leader)
+pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult = {
+  if (s.is_leader()){
+    // Line 3
+    val res = handle_vote(v, s)
+    val qc = res._1
+    val s1 = res._2
+
+    if (qc != None) {
+      val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
+      val p = build_proposal(s1.curView, new_block, None, None, s1.address)
+      { state: s1, output: Set(BroadcastProp(p))}
+    } else 
+      { state: s1, output: Set()}
+
+  } else
+    { state: s, output: Set()}
+}
 
 
-// Alg 2 line 10 / line 52 (leader/ non-leader)
-pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult =
-  if (s.is_leader())
-    // TODO line 11
-    { state: s, output: Set() }
-  else
-    // TODO line 53
-    { state: s, output: Set() }
+/// Alg 2 line 10 / line 52 (leader/ non-leader)
+pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult ={
+  val res = handle_timeout(t, s)
+  val tc = res._1
+  val s1 = res._2
+  if (s.is_leader()){
+    //line 11
+    if (tc != None) {
+      val s2 = {... s1, last_tc: tc.unwrap(), high_tip: tc.unwrap().high_tip}
+      //Line 15: TODO: related to block recovery
+      //if block and its payload (block.payload) for high tip is present then
+      val dummy_block = build_block(s2.high_tip.unwrap().block_header.qc, "payload") //TODO: How to handle this?
+      val p = build_proposal(s2.curView, dummy_block, Some(tc.unwrap()), None) // Reproposal
+      { state: s2, output: Set(BroadcastProp(p))}
+      // Line 18 else SendRecoveryRequest(curView, high tip, tc); 
+  }else
+    //line 53
+    { state: s1, output: Set()}
+  
+  } else {
+    //line 54
+    { state: s1, output: Set()}
+  }
+}
 
 
 // Alg 2 line 34
-pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult =
-  // TODO
-  { state: s, output: Set() }
+pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
+  val s1 = match p.tc {
+    | None =>
+        s
+    | Some(tc) =>
+        increment_view(tc.view, s)
+  }
+  val s2 = increment_view(p.block.qc.view, s1)
+  if (not(s.is_leader()) or p.view != s.curView) { //Warning: is the view being updated before the Leader check? Lines 35-36
+    { output: Set(), state: s }
+  } else if (safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view)) {
+    // Line 38
+    val parent_proposal = get_proposal(p.parent_id(), s.proposals) 
+    val grandparent_proposal= get_proposal(parent_proposal.parent_id(), s.proposals)
 
+    //Line 41
+    val commit = if (p.block.qc.view == parent_proposal.block.qc.view + 1)
+      Set(Commit(grandparent_proposal), Confirmation(p))
+    else Set()
+
+    //Line 43
+    val early_confirmation = if (p.view == p.block.qc.view + 1) //Warning; typo in the paper
+      Set(EarlyConfirmation(parent_proposal))
+    else Set()
+
+    val ledger = if (p.view == p.block.qc.view + 1)
+      execute_block(s2, p) //TODO: Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor? 
+    else s2.ledger
+
+    val s3 = {...s2, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p)}
+    val vote_msg = {
+      view: p.view,
+      seq: p.block.seq,
+      proposal_id: p.proposal_id,
+      state_hash: 0,
+      sigma: "",
+    }
+    val send_vote = Set(SendVoteToNextLeader(("TODO: fix this", vote_msg)))
+    { output: commit.union(early_confirmation).union(send_vote), state: s3 }
+  } else {
+    { output: Set(), state: s }
+  }
+}
 
 // Alg 2 line 49
 pure def timeout_event (s: LocalState): ConsensusResult =
@@ -414,7 +591,9 @@ pure def timeout_event (s: LocalState): ConsensusResult =
 // State machine
 
 const validators: Set[Address]
-
+const F : int // number of byzantine nodes
+const Q : int // number of votes needed to reach consensus
+const N : int // number of nodes 
 
 
 
@@ -429,7 +608,8 @@ type Environment = {
 var s: Environment
 
 
-// TODO: I think we need to preload with a vote message towards the proposer
+// TODO: I think we need to preload with a vote message towards the 
+/*
 action init = all {
   s' = {
     system: validators.mapBy(v => v), //initialize_process(v)),
@@ -443,7 +623,7 @@ action init = all {
     activeTimeouts: validators.mapBy(v => Set()),
   }
 }
-
+*/
 
 
 
