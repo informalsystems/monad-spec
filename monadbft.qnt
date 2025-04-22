@@ -32,7 +32,7 @@ type VoteMsg = {
   view: int,
   seq: int,
   proposal_id: ProposalID,
-  state_hash: int,
+  state_hash: StateHash,
   sigma: Signature,
 }
 
@@ -47,7 +47,7 @@ type NoEndorsementMsg = {
 type TimeoutMsg = {
   view: int,
   tip: Tip,
-  tc: TCAux,  // timeout certificate use tc.view. Needed to avoid cyclic data type
+  tc: TCAux,  //timeout certificate use tc.view. Needed to avoid cyclic data type. TODO: Maybe this should be an option
   sigma: Signature,
 }
 
@@ -73,8 +73,10 @@ type TC = {
 
 /// Auxiliary type for timeout certificate to avoid circular data types 
 type TCAux = {
-  id: int,
   view: int,
+  high_tip: Option[Tip],
+  tips: Set[Tip],
+  sigma: Signature,
 }
 
 /// ⟨view, highqc view, Σ⟩ (page 9)
@@ -122,7 +124,7 @@ type LocalState = {
   // Variables from Algorithm 2
   high_tip: Option[Tip], //NB: sure this is an option
   tip: Option[Tip], //NB: sure this is an option
-  last_tc: TC,
+  last_tc: Option[TC],
   curView: int,
   ledger: Ledger,
   highest_voted_view: int,
@@ -248,6 +250,15 @@ pure def execute_block(s: LocalState, p: Proposal): Ledger = {
   append(s.ledger, p)
 }
 
+/// Check if a block was alread received
+pure def block_present(s: LocalState, bh: BlockHeader): bool = {
+  s.proposals.filter(p => p.block.header_from_block() == bh).size() > 0
+}
+
+/// Fetch the block from the local state
+pure def get_present_block(s: LocalState, bh: BlockHeader): Block = {
+  s.proposals.filter(p => p.block.header_from_block() == bh).getOnlyElement().block
+}
 
 //
 // Algorithm 1 (page 13)
@@ -357,8 +368,7 @@ pure def verify_fresh_proposal(tip: Tip): bool ={
 /// Warning: the side effects of this function seem wrong.
 pure def find_high_tip(tc: TC): Option[Tip] = {
   val tips = tc.tips
-  // The first if else block (L3 -> L7) is skipped because until we figure out if
-  // we need it
+  // TODO: The first if else block (L3 -> L7) is skipped until we figure out if we need it
   if (not (tips.forall(t => t.verify_fresh_proposal()))) None
   else {
     // argmax (t∈tips) t.view
@@ -387,10 +397,11 @@ pure def increment_view(view: int, s: LocalState): LocalState = {
 
 
 /// Alg 4 line 10
-pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , LocalState) = {
+/// Output = (TC, LocalState, bool: whether to trigger timeout event)
+pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] ,LocalState, bool)  = {
   val v = t.view
 
-  if (v < s.curView) (None, s)
+  if (v < s.curView) (None, s, false)
   else {
     val s1 = increment_view(t.tip.block_header.qc.view, s)
     val s2 = increment_view(t.tc.view, s1)
@@ -400,13 +411,13 @@ pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , LocalState)
     // Check if we have a quorum
     if (acc_timeouts.size() >= Q) {
       val tc = build_tc(acc_timeouts, s3.address)
-      (Some(tc), increment_view(tc.view, s3))
+      (Some(tc), increment_view(tc.view, s3), false)
     }
     else if(acc_timeouts.size() >= F + 1 and not (s3.broadcast_timeout.getOrElse(v, false))) {
-      // TODO: TRIGGER TIMEOUT EVENT
-      (None, {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)})
+      //TRIGGER TIMEOUT EVENT
+      (None, {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)}, true)
     }
-    else (None, s3)
+    else (None, s3, false)
   }
 }
 
@@ -437,33 +448,20 @@ pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC],LocalState) = {
 // Algorithm 2 (page 15)
 //
 
-/*
 pure def initialize_process (address: str): LocalState =
   {
-    high_tip: {
-      view: -1,
-      proposal_id: -1,
-      block_header: {
-        seq: -1,
-        payload_hash: "",
-        qc: Set(),
-        block_hash: -1,
-      },
-      sigma: "",
-      nec: Set(),
-      tip_id: -1,
-    },
-    last_tc: {
-      id: -1,
-      c: Set(),
-    },
+    high_tip: None,
+    last_tc: None,
+    tip: None,
+    proposals: Set(),
+    timeouts: Map(),
+    broadcast_timeout: Map(),
     curView: 0,
     ledger: [],
     highest_voted_view: -1,
     votes: Map(), 
     address: address,
   }
-*/
 
 pure def is_leader(s: LocalState): bool =
   // TODO check if the node is the leader
@@ -476,6 +474,7 @@ type ConsensusOutput =
   | EarlyConfirmation(Proposal)
   | Confirmation(Proposal)
   | SendVoteToNextLeader((Address, VoteMsg))
+  | InternalTimeout // TODO: @josef-widder Algorithm 2 line 49
 // Algorithm 5 has more responses
 
 type ConsensusResult = {
@@ -505,27 +504,36 @@ pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult = {
 
 
 /// Alg 2 line 10 / line 52 (leader/ non-leader)
-pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult ={
+pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult = {
   val res = handle_timeout(t, s)
   val tc = res._1
   val s1 = res._2
+  val trigger_timeout = res._3
+
+  val effects = if (trigger_timeout) Set(InternalTimeout) else Set()
+
   if (s.is_leader()){
     //line 11
     if (tc != None) {
-      val s2 = {... s1, last_tc: tc.unwrap(), high_tip: tc.unwrap().high_tip}
-      //Line 15: TODO: related to block recovery
-      //if block and its payload (block.payload) for high tip is present then
-      val dummy_block = build_block(s2.high_tip.unwrap().block_header.qc, "payload") //TODO: How to handle this?
-      val p = build_proposal(s2.curView, dummy_block, Some(tc.unwrap()), None) // Reproposal
-      { state: s2, output: Set(BroadcastProp(p))}
-      // Line 18 else SendRecoveryRequest(curView, high tip, tc); 
+      val s2 = {... s1, last_tc: tc, high_tip: tc.unwrap().high_tip}
+      val high_tip = tc.unwrap().high_tip.unwrap() //TODO: it should be safe to unwrap here, but we should check. 
+
+      if (block_present(s2, high_tip.block_header)) { //if block and its payload (block.payload) for high tip is present
+        // Line 17
+        val block = get_present_block(s2, high_tip.block_header)
+        val p = build_proposal(s2.curView, block, tc, None, s2.address)
+        { state: s2, output: effects.setAdd(BroadcastProp(p))}
+      } else
+        // Line 18-19-20 recoveringcurView ← true; SendRecoveryRequest(curView, high tip, tc); 
+        { state: s2, output: effects}
+      
   }else
-    //line 53
-    { state: s1, output: Set()}
+    // Not enough timeout messages to form tc
+    { state: s1, output: effects}
   
   } else {
-    //line 54
-    { state: s1, output: Set()}
+    //line 52
+    { state: s1, output: effects}
   }
 }
 
@@ -565,10 +573,10 @@ pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
       view: p.view,
       seq: p.block.seq,
       proposal_id: p.proposal_id,
-      state_hash: 0,
-      sigma: "",
+      state_hash: state_hash(s3),
+      sigma: s3.address,
     }
-    val send_vote = Set(SendVoteToNextLeader(("TODO: fix this", vote_msg)))
+    val send_vote = Set(SendVoteToNextLeader(("v1", vote_msg))) //TODO: send to next leader
     { output: commit.union(early_confirmation).union(send_vote), state: s3 }
   } else {
     { output: Set(), state: s }
@@ -576,9 +584,29 @@ pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
 }
 
 // Alg 2 line 49
-pure def timeout_event (s: LocalState): ConsensusResult =
-  // TODO
-  { state: s, output: Set() }
+pure def timeout_event (s: LocalState): ConsensusResult = {
+  if (s.is_leader())  { state: s, output: Set()} //Leader does nothing upon receival of timeout event
+  else {
+    val s1 = {...s, highest_voted_view: max(s.highest_voted_view, s.curView)}
+    val tc_aux = {
+      view: s.curView,
+      high_tip: None,
+      tips: Set(),
+      sigma: s.address
+    }
+    val timeout_msg = {
+      view: s.curView,
+      tip: s.tip.unwrap(), //TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
+      tc: tc_aux,
+      sigma: s.address
+    }
+    { state: s1, output: Set(BroadCastTimeout(timeout_msg))}
+  }
+}
+  
+  
+  
+
 
 
 //
@@ -608,22 +636,31 @@ type Environment = {
 var s: Environment
 
 
-// TODO: I think we need to preload with a vote message towards the 
-/*
+
+// TODO: what to do about the genesis block/QC?
+val genesis_qc = {
+    c: Set(),
+    view: 0,
+    seq: 0,
+    proposal_id: {seq: 0, view: 0, byzantine: 0},
+    state_hash: List(),
+    sigma: "v1",
+  }
+
 action init = all {
   s' = {
-    system: validators.mapBy(v => v), //initialize_process(v)),
+    system: validators.mapBy(v => initialize_process(v)),
     voteBuffer: validators.mapBy(v => Set()),
     propBuffer: validators.mapBy(v => 
       Set(build_proposal( 1, 
-                          build_block(Set(), "first block"),
-                          { id: 1, c: Set()}, 
-                          Set()))),
+                          build_block(genesis_qc, "first block"),
+                          None, 
+                          None, "v1"))),
     timeoutBuffer: validators.mapBy(v => Set()),
     activeTimeouts: validators.mapBy(v => Set()),
   }
 }
-*/
+
 
 
 
@@ -643,6 +680,8 @@ pure def apply_effect (env: Environment, v: str, res: ConsensusResult): Environm
       | Confirmation(p) =>
           s
       | SendVoteToNextLeader(am) =>
+          s
+      | InternalTimeout =>
           s
     }
   })
