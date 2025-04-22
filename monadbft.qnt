@@ -71,7 +71,7 @@ type ConsensusResult = {
 
 // CSMI
 // This initializes process that is identified by address
-pure def initialize_process (address: str): LocalState =
+pure def initialize_process (address: Address): LocalState =
   {
     high_tip: None,
     last_tc: None,
