@@ -246,9 +246,29 @@ pure def get_proposal(id: ProposalID, proposals: Set[Proposal] ): Proposal =
 
 /// Execute the proposal
 /// TODO: redesign this function
-pure def execute_block(s: LocalState, p: Proposal): Ledger = {
-  append(s.ledger, p)
+pure def execute_block(ledger: Ledger, p: Proposal): Ledger = {
+  append(ledger, p)
 }
+
+/// Check if a proposal conflicts with the ledger
+pure def proposal_conflicts(ledger: Ledger, p: Proposal): bool = {
+  ledger.select(l => conflicting_props(l, p)).length() > 0
+}
+
+/// Revert the ledger to the common ancestor
+pure def revert_ledger(ledger: Ledger, p: Proposal): Ledger = {
+  val common_ancestor = ledger.select(l => l.proposal_id == p.proposal_id)[0] //TODO: 1)this might throw an error if the parent is not in the ledger, handle the error. 
+  // TODO, (line above) 2) Might need to recheck the logic of prop_id == ledger_element.id, should we go up the tree for the proposal too? 
+  // Slice the ledger to the common ancestor
+  val index = ledger.foldl((0,false), (acc, l) => { //TODO: this is just an index function, check quint spells.
+    if (l == common_ancestor) (acc._1, true)
+    else if (not (acc._2)) (acc._1 + 1, acc._2)
+    else (acc._1 , acc._2)
+  })
+  ledger.slice(0, index._1)
+}
+  
+
 
 /// Check if a block was alread received
 pure def block_present(s: LocalState, bh: BlockHeader): bool = {
@@ -547,9 +567,9 @@ pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
         increment_view(tc.view, s)
   }
   val s2 = increment_view(p.block.qc.view, s1)
-  if (not(s.is_leader()) or p.view != s.curView) { //Warning: is the view being updated before the Leader check? Lines 35-36
+  if (not(s.is_leader()) or p.view != s.curView) { //Warning: is the view being updated before the Leader check? Lines 35-36.
     { output: Set(), state: s }
-  } else if (safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view)) {
+  } else if (safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view)) {  //Warning: is the view being updated before the safety check.
     // Line 38
     val parent_proposal = get_proposal(p.parent_id(), s.proposals) 
     val grandparent_proposal= get_proposal(parent_proposal.parent_id(), s.proposals)
@@ -564,9 +584,15 @@ pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
       Set(EarlyConfirmation(parent_proposal))
     else Set()
 
-    val ledger = if (p.view == p.block.qc.view + 1)
-      execute_block(s2, p) //TODO: Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor? 
-    else s2.ledger
+
+    val reverted_ledger = if (proposal_conflicts(s2.ledger, p)) { //Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor. 
+      revert_ledger(s2.ledger, p)
+    } else s2.ledger
+
+
+    val ledger = if (p.view == p.block.qc.view + 1) //Line 45 - Speculate
+      execute_block(reverted_ledger, p) 
+    else reverted_ledger
 
     val s3 = {...s2, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p)}
     val vote_msg = {
