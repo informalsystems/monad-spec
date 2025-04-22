@@ -164,17 +164,16 @@ pure def state_hash(s: LocalState) : StateHash = {
 
 /// Check if qc1 is a parent of qc2
 pure def parent (qc1: QC, qc2: QC): bool =
-  // TODO check if qc1 is a parent of qc2
+  // TODO IMPLEMENT ME
   true
 
 /// Check if qc1 extends qc2
 pure def extend (qc1: QC, qc2: QC): bool =
-  // TODO 
+  // TODO IMPLEMENT ME 
   true
 
 /// Check if two QCs are conflicting
 pure def conflicting_qcs (qc1: QC, qc2: QC): bool =
-  // TODO check if qc1 and qc2 are conflicting
   and {
     not(extend(qc1, qc2)),
     not(extend(qc2, qc1)),
