@@ -738,12 +738,13 @@ type Environment = {
 
 var s: Environment
 
-/// safety property page 10: No two correct validators commit different blocks
+/// Safety property page 10: No two correct validators commit different blocks
 /// for the same sequence number
 def safety = 
   val a = s.committed_proposals.values().flatten()
   a.forall(p => a.filter(p2 => p2.block.seq == p.block.seq).size() == 1)
 
+/// No Tail-Forking (NTF) page 10:
 def ntf = 
   val a = s.msgHistory.fold(Set(), (s, x) => match x {
     | Prop(p) =>
@@ -757,7 +758,8 @@ def ntf =
   })
   a.forall(v => 
     // If an honest leader’s proposal for sequence number s is voted upon by a majority of honest validators, 
-    a.filter(v2 => v2.seq == v.seq and v2.proposal_id == v.proposal_id).size() > validators.size()/2
+    // TODO: filter faulty proposer's proposals
+    a.filter(v2 => v2.seq == v.seq and v2.proposal_id == v.proposal_id).size() > validators.size() / 2
     implies
     //  then no other proposal can commit at sequence s.
     s.committed_proposals.values().flatten().forall(p =>
