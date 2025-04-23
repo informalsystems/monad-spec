@@ -516,7 +516,7 @@ pure def increment_view(view: int, s: LocalState): LocalState = {
 pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] ,LocalState, bool)  = {
   val v = t.view
 
-  if (v < s.curView) (None, s, false)
+  if (v < s.curView) (None, s, false) // line 29
   else {
     val s1 = increment_view(t.tip.block_header.qc.view, s)
     val s2 = increment_view(t.tc.view, s1)
