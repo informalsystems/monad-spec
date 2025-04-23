@@ -60,7 +60,7 @@ type ConsensusOutput =
   | EarlyConfirmation(Proposal)
   | Confirmation(Proposal)
   | SendVoteToNextLeader((Address, VoteMsg))
-  | InternalTimeout // TODO: @josef-widder Algorithm 2 line 49
+  | StartTimeout(TimeoutEvent) // TODO: @josef-widder Algorithm 2 line 49
 // Algorithm 5 has more responses
 
 type ConsensusResult = {
@@ -598,7 +598,7 @@ pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult = {
   val s1 = res._2
   val trigger_timeout = res._3
 
-  val effects = if (trigger_timeout) Set(InternalTimeout) else Set()
+  val effects = if (trigger_timeout) Set(StartTimeout(1)) else Set()
 
   if (s.is_leader()){
     //line 11
@@ -821,8 +821,8 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
       | SendVoteToNextLeader(am) =>
           { ... s,  msgHistory: s.msgHistory.setAdd(Vote(am._2)),
                     msgBuffer: s.msgBuffer.setBy(am._1, msgs => msgs.setAdd(Vote(am._2))) }
-      | InternalTimeout =>
-          s
+      | StartTimeout(t) =>
+           { ... s, activeTimeouts: s.activeTimeouts.setBy(v, ato => ato.setAdd(t)) }
     }
   })
 
