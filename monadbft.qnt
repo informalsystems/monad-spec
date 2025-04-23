@@ -811,7 +811,7 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
       | BroadcastProp(p) =>
           { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Prop(p)))) } // update propBuffers
       | BroadCastTimeout(t) =>
-                    { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Timeout(t)))) } // update propBuffers
+          { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Timeout(t)))) } // update propBuffers
       | Commit(p) =>
           { ... s, committed_proposals: s.committed_proposals.set(v, s.committed_proposals.get(v).setAdd(p)) }
       | EarlyConfirmation(p) =>
