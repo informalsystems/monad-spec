@@ -742,7 +742,7 @@ var s: Environment
 /// for the same sequence number
 def safety = 
   val a = s.committed_proposals.values().flatten()
-  a.forall(p => a.filter(p2 => p2.block.seq == p.block.seq).size() == 1)
+  a.forall(p1 => a.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
 
 /// No Tail-Forking (NTF) page 10:
 def ntf = 
