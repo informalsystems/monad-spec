@@ -820,7 +820,7 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
           s
       | SendVoteToNextLeader(am) =>
           { ... s,  msgHistory: s.msgHistory.setAdd(Vote(am._2)),
-                    msgBuffer: s.msgBuffer.set(am._1, s.msgBuffer.get(am._1).setAdd(Vote(am._2))) }
+                    msgBuffer: s.msgBuffer.setBy(am._1, msgs => msgs.setAdd(Vote(am._2))) }
       | InternalTimeout =>
           s
     }
