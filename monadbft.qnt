@@ -761,7 +761,7 @@ action init = all {
       Set(Prop(build_proposal( 1, 
                           build_block(genesis_qc, "first block"),
                           None, 
-                          None, "v1"))))),
+                          None, "v1")))),
     activeTimeouts: validators.mapBy(v => Set()),
   }
 }
