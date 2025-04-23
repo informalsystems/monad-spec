@@ -532,7 +532,7 @@ pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] ,LocalState, 
       //TRIGGER TIMEOUT EVENT
       (None, {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)}, true)
     }
-    else (None, s3, false)
+    else (None, s3, false) // line 24 (if condition at line 21 evaluated to false)
   }
 }
 
