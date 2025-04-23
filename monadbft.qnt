@@ -731,9 +731,38 @@ type Environment = {
   system: Address -> LocalState,
   msgBuffer: Address -> Set[Message],
   activeTimeouts: Address -> Set[TimeoutEvent], 
+  // for analysis purposes
+  committed_proposals: Address -> Set[Proposal],
+  msgHistory: Set[Message],
 }
 
 var s: Environment
+
+/// safety property page 10: No two correct validators commit different blocks
+/// for the same sequence number
+def safety = 
+  val a = s.committed_proposals.values().flatten()
+  a.forall(p => a.filter(p2 => p2.block.seq == p.block.seq).size() == 1)
+
+def ntf = 
+  val a = s.msgHistory.fold(Set(), (s, x) => match x {
+    | Prop(p) =>
+        s
+    | Vote(v) =>
+        s.setAdd(v)
+    | Timeout(t) =>
+        s
+    | NoEndorsement(n) =>
+        s
+  })
+  a.forall(v => 
+    // If an honest leader’s proposal for sequence number s is voted upon by a majority of honest validators, 
+    a.filter(v2 => v2.seq == v.seq and v2.proposal_id == v.proposal_id).size() > validators.size()/2
+    implies
+    //  then no other proposal can commit at sequence s.
+    s.committed_proposals.values().flatten().forall(p =>
+      p.block.seq == v.seq implies p.proposal_id == v.proposal_id)
+  )
 
 //
 //
@@ -763,7 +792,10 @@ action init = all {
                           None, 
                           None, "v1")))),
     activeTimeouts: validators.mapBy(v => Set()),
-  }
+    committed_proposals: validators.mapBy(v => Set()),
+    msgHistory: Set(),
+  },
+
 }
 
 
@@ -779,13 +811,14 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
       | BroadCastTimeout(t) =>
           s
       | Commit(p) =>
-          s
+          { ... s, committed_proposals: s.committed_proposals.set(v, s.committed_proposals.get(v).setAdd(p)) }
       | EarlyConfirmation(p) =>
           s
       | Confirmation(p) =>
           s
       | SendVoteToNextLeader(am) =>
-          s
+          { ... s,  msgHistory: s.msgHistory.setAdd(Vote(am._2)),
+                    msgBuffer: s.msgBuffer.set(am._1, s.msgBuffer.get(am._1).setAdd(Vote(am._2))) }
       | InternalTimeout =>
           s
     }
