@@ -513,7 +513,7 @@ pure def increment_view(view: int, s: LocalState): LocalState = {
 
 /// Alg 4 line 10
 /// Output = (TC, LocalState, bool: whether to trigger timeout event)
-pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] ,LocalState, bool)  = {
+pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , LocalState, bool)  = {
   val v = t.view
 
   if (v < s.curView) (None, s, false)
@@ -590,15 +590,40 @@ pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult = {
     { state: s, output: Set()}
 }
 
+/// Alg 2 line 49
+/// As opposed to the paper, we write the timeout event as a function that is called by the timeout handler.
+/// Instead of of a "upon" statement that gets triggered.
+/// Warning: The upon trigger event block is not clear on its synchrony assumptions. 
+pure def timeout_event (s: LocalState): ConsensusResult = {
+  if (s.is_leader())  { state: s, output: Set()} //Leader does nothing upon receival of timeout event
+  else {
+    val s1 = {...s, highest_voted_view: max(s.highest_voted_view, s.curView)}
+    val tc_aux = {
+      view: s.curView,
+      high_tip: None,
+      tips: Set(),
+      sigma: s.address
+    }
+    val timeout_msg = {
+      view: s.curView,
+      tip: s.tip.unwrap(), //TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
+      tc: tc_aux,
+      sigma: s.address
+    }
+    { state: s1, output: Set(BroadCastTimeout(timeout_msg))}
+  }
+}
 
 /// Alg 2 line 10 / line 52 (leader/ non-leader)
 pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult = {
   val res = handle_timeout(t, s)
   val tc = res._1
-  val s1 = res._2
+  val s0 = res._2
   val trigger_timeout = res._3
 
-  val effects = if (trigger_timeout) Set(StartTimeout(1)) else Set()
+  val co = if (trigger_timeout) timeout_event(s0) else { state: s0, output: Set()} // calling the timeout event synchronously in the timeout message handler
+  val s1 = co.state
+  val effects = co.output
 
   if (s.is_leader()){
     //line 11
@@ -677,26 +702,7 @@ pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
   }
 }
 
-// Alg 2 line 49
-pure def timeout_event (s: LocalState): ConsensusResult = {
-  if (s.is_leader())  { state: s, output: Set()} //Leader does nothing upon receival of timeout event
-  else {
-    val s1 = {...s, highest_voted_view: max(s.highest_voted_view, s.curView)}
-    val tc_aux = {
-      view: s.curView,
-      high_tip: None,
-      tips: Set(),
-      sigma: s.address
-    }
-    val timeout_msg = {
-      view: s.curView,
-      tip: s.tip.unwrap(), //TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
-      tc: tc_aux,
-      sigma: s.address
-    }
-    { state: s1, output: Set(BroadCastTimeout(timeout_msg))}
-  }
-}
+
   
   
   
@@ -722,8 +728,8 @@ pure def timeout_event (s: LocalState): ConsensusResult = {
 
 const validators: Set[Address]
 const F : int // number of byzantine nodes
-const Q : int // number of votes needed to reach consensus
-const N : int // number of nodes 
+val Q = 2 * F + 1// number of votes needed to reach consensus
+val N = validators.size() // number of nodes 
 
 
 
