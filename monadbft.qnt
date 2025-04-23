@@ -747,14 +747,8 @@ def safety =
 /// No Tail-Forking (NTF) page 10:
 def ntf = 
   val a = s.msgHistory.fold(Set(), (s, x) => match x {
-    | Prop(p) =>
-        s
-    | Vote(v) =>
-        s.setAdd(v)
-    | Timeout(t) =>
-        s
-    | NoEndorsement(n) =>
-        s
+    | Vote(v) => s.setAdd(v)
+    | _ => s
   })
   a.forall(v => 
     // If an honest leader’s proposal for sequence number s is voted upon by a majority of honest validators, 
