@@ -60,7 +60,7 @@ type ConsensusOutput =
   | EarlyConfirmation(Proposal)
   | Confirmation(Proposal)
   | SendVoteToNextLeader((Address, VoteMsg))
-  | InternalTimeout // TODO: @josef-widder Algorithm 2 line 49
+  | StartTimeout(TimeoutEvent) // TODO: @josef-widder Algorithm 2 line 49
 // Algorithm 5 has more responses
 
 type ConsensusResult = {
@@ -504,56 +504,64 @@ pure def find_high_tip(tc: TC): Option[Tip] = {
 /// Update the local state with a new view
 /// We pass view instead of cert to simplify the code.
 /// We remove the timer start/stop as we don't model them in Quint.
-pure def increment_view(view: int, s: LocalState): LocalState = {
+pure def increment_view(view: int, s: LocalState): ConsensusResult = {
   if (view >= s.curView)
-    { ... s, curView: view } // Increment view to next
+    {state :{ ... s, curView: view}, output: Set(StartTimeout(view))} // Increment view to next and reset the timer
   else
-    s
+    {state:s , output: Set()} // No change
 }
 
 
 /// Alg 4 line 10
 /// Output = (TC, LocalState, bool: whether to trigger timeout event)
-pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] ,LocalState, bool)  = {
+pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , ConsensusResult, bool)  = {
   val v = t.view
 
-  if (v < s.curView) (None, s, false) // line 29
+  if (v < s.curView) (None, {state: s , output: Set()}, false) // line 29
   else {
-    val s1 = increment_view(t.tip.block_header.qc.view, s)
-    val s2 = increment_view(t.tc.view, s1)
+    val co1 = increment_view(t.tip.block_header.qc.view, s)
+    val s1 = co1.state
+    
+    val co2 = increment_view(t.tip.view, s1)
+    val s2 = co2.state
+    val effects = co1.output.union(co2.output)  
+    
     // Timeout is new, let's accumulate it
     val acc_timeouts = s2.timeouts.getOrElse(v, Set()).setAdd(t)
     val s3 = {...s2, timeouts: s2.timeouts.put(v, acc_timeouts)}
     // Check if we have a quorum
     if (acc_timeouts.size() >= Q) {
       val tc = build_tc(acc_timeouts, s3.address)
-      (Some(tc), increment_view(tc.view, s3), false)  // line 20 
+      val co3 = increment_view(tc.view, s3)
+      (Some(tc), {state: co3.state, output: co3.output.union(effects)}, false) //TODO: do we need to carry the effects of the previous increment_view here
+                                                                               // line 20 
     }
     else if(acc_timeouts.size() >= F + 1 and not (s3.broadcast_timeout.getOrElse(v, false))) { // lines 22,23,24 (if branch of statement at line 21 taken)
       //TRIGGER TIMEOUT EVENT
-      (None, {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)}, true)
+      val s4 = {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)}
+      (None, {state: s4, output: effects}, true)
     }
-    else (None, s3, false) // line 24 (if condition at line 21 evaluated to false)
+    else (None, {state: s3, output: effects}, false) // line 24 (if condition at line 21 evaluated to false)
   }
 }
 
 
 /// Alg 4 line 25
-pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC],LocalState) = {
+pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC], ConsensusResult) = {
   val v = vote.view
   val id = vote.proposal_id
   
-  if (v < s.curView) (None,s)
+  if (v < s.curView) (None,{state: s, output: Set()})
   else {
     // Vote is new, let's accumulate it
     val acc_votes = s.votes.getOrElse(id, Set()).setAdd(vote)
-    val new_state = {...s, votes: s.votes.put(id, acc_votes)}
+    val s1 = {...s, votes: s.votes.put(id, acc_votes)}
     // Check if we have a quorum
     if (acc_votes.size() >= Q) {
-      val qc = build_qc(acc_votes, s.address, state_hash(new_state))
-      (Some(qc), increment_view(qc.view, new_state))
+      val qc = build_qc(acc_votes, s.address, state_hash(s1))
+      (Some(qc), increment_view(qc.view, s1))
     }
-    else (None, new_state)
+    else (None, {state: s1, output: Set()})
     }
   }
 
@@ -578,28 +586,54 @@ pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult = {
     // Line 3
     val res = handle_vote(v, s)
     val qc = res._1
-    val s1 = res._2
+    val s1 = res._2.state
+    val effects = res._2.output
 
     if (qc != None) {
       val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
       val p = build_proposal(s1.curView, new_block, None, None, s1.address)
-      { state: s1, output: Set(BroadcastProp(p))}
+      { state: s1, output: effects.setAdd(BroadcastProp(p))}
     } else 
-      { state: s1, output: Set()}
+      { state: s1, output: effects}
 
   } else
-    { state: s, output: Set()}
+    { state: s, output: Set() }
 }
 
+/// Alg 2 line 49
+/// As opposed to the paper, we write the timeout event as a function that is called by the timeout handler.
+/// Instead of of a "upon" statement that gets triggered.
+/// Warning: The upon trigger event block is not clear on its synchrony assumptions. 
+pure def timeout_event (s: LocalState): ConsensusResult = {
+  if (s.is_leader())  { state: s, output: Set()} //Leader does nothing upon receival of timeout event
+  else {
+    val s1 = {...s, highest_voted_view: max(s.highest_voted_view, s.curView)}
+    val tc_aux = {
+      view: s.curView,
+      high_tip: None,
+      tips: Set(),
+      sigma: s.address
+    }
+    val timeout_msg = {
+      view: s.curView,
+      tip: s.tip.unwrap(), //TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
+      tc: tc_aux,
+      sigma: s.address
+    }
+    { state: s1, output: Set(BroadCastTimeout(timeout_msg))}
+  }
+}
 
 /// Alg 2 line 10 / line 52 (leader/ non-leader)
 pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult = {
   val res = handle_timeout(t, s)
   val tc = res._1
-  val s1 = res._2
+  val s0 = res._2.state
   val trigger_timeout = res._3
 
-  val effects = if (trigger_timeout) Set(InternalTimeout) else Set()
+  val co = if (trigger_timeout) timeout_event(s0) else { state: s0, output: Set()} // calling the timeout event synchronously in the timeout message handler
+  val s1 = co.state
+  val effects = co.output.union(res._2.output)
 
   if (s.is_leader()){
     //line 11
@@ -629,15 +663,19 @@ pure def receive_timeout (s: LocalState, t: TimeoutMsg): ConsensusResult = {
 
 // Alg 2 line 34
 pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
-  val s1 = match p.tc {
+  val co1 = match p.tc {
     | None =>
-        s
+        {state:s, output: Set()}
     | Some(tc) =>
         increment_view(tc.view, s)
   }
-  val s2 = increment_view(p.block.qc.view, s1)
+  val s1 = co1.state
+  val co2 = increment_view(p.block.qc.view, s1)
+  val s2 = co2.state
+  val timers = co1.output.union(co2.output)
+
   if (not(s.is_leader()) or p.view != s.curView) { //Warning: is the view being updated before the Leader check? Lines 35-36.
-    { output: Set(), state: s }
+    { output: Set(), state: s } //TODO: should we update this now that the timer get's triggered upon entering a new view.
   } else if (safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view)) {  //Warning: is the view being updated before the safety check.
     // Line 38
     val parent_proposal = get_proposal(p.parent_id(), s.proposals) 
@@ -672,32 +710,13 @@ pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
       sigma: s3.address,
     }
     val send_vote = Set(SendVoteToNextLeader(("v1", vote_msg))) //TODO: send to next leader
-    { output: commit.union(early_confirmation).union(send_vote), state: s3 }
+    { output: commit.union(early_confirmation).union(send_vote).union(timers), state: s3 }
   } else {
     { output: Set(), state: s }
   }
 }
 
-// Alg 2 line 49
-pure def timeout_event (s: LocalState): ConsensusResult = {
-  if (s.is_leader())  { state: s, output: Set()} //Leader does nothing upon receival of timeout event
-  else {
-    val s1 = {...s, highest_voted_view: max(s.highest_voted_view, s.curView)}
-    val tc_aux = {
-      view: s.curView,
-      high_tip: None,
-      tips: Set(),
-      sigma: s.address
-    }
-    val timeout_msg = {
-      view: s.curView,
-      tip: s.tip.unwrap(), //TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
-      tc: tc_aux,
-      sigma: s.address
-    }
-    { state: s1, output: Set(BroadCastTimeout(timeout_msg))}
-  }
-}
+
   
   
   
@@ -723,8 +742,8 @@ pure def timeout_event (s: LocalState): ConsensusResult = {
 
 const validators: Set[Address]
 const F : int // number of byzantine nodes
-const Q : int // number of votes needed to reach consensus
-const N : int // number of nodes 
+val Q = 2 * F + 1// number of votes needed to reach consensus
+val N = validators.size() // number of nodes 
 
 
 
@@ -732,9 +751,34 @@ type Environment = {
   system: Address -> LocalState,
   msgBuffer: Address -> Set[Message],
   activeTimeouts: Address -> Set[TimeoutEvent], 
+  // for analysis purposes
+  committed_proposals: Address -> Set[Proposal],
+  msgHistory: Set[Message],
 }
 
 var s: Environment
+
+/// Safety property page 10: No two correct validators commit different blocks
+/// for the same sequence number
+def safety = 
+  val a = s.committed_proposals.values().flatten()
+  a.forall(p1 => a.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
+
+/// No Tail-Forking (NTF) page 10:
+def ntf = 
+  val a = s.msgHistory.fold(Set(), (s, x) => match x {
+    | Vote(v) => s.setAdd(v)
+    | _ => s
+  })
+  a.forall(v => 
+    // If an honest leader’s proposal for sequence number s is voted upon by a majority of honest validators, 
+    // TODO: filter faulty proposer's proposals
+    a.filter(v2 => v2.seq == v.seq and v2.proposal_id == v.proposal_id).size() > validators.size() / 2
+    implies
+    //  then no other proposal can commit at sequence s.
+    s.committed_proposals.values().flatten().forall(p =>
+      p.block.seq == v.seq implies p.proposal_id == v.proposal_id)
+  )
 
 //
 //
@@ -764,7 +808,10 @@ action init = all {
                           None, 
                           None, "v1")))),
     activeTimeouts: validators.mapBy(v => Set()),
-  }
+    committed_proposals: validators.mapBy(v => Set()),
+    msgHistory: Set(),
+  },
+
 }
 
 
@@ -776,19 +823,20 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
   res.output.fold(new, (s, x) => {
     match x {
       | BroadcastProp(p) =>
-          s // update propBuffers
+          { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Prop(p)))) } // update propBuffers
       | BroadCastTimeout(t) =>
-          s
+          { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Timeout(t)))) } // update propBuffers
       | Commit(p) =>
-          s
+          { ... s, committed_proposals: s.committed_proposals.set(v, s.committed_proposals.get(v).setAdd(p)) }
       | EarlyConfirmation(p) =>
           s
       | Confirmation(p) =>
           s
       | SendVoteToNextLeader(am) =>
-          s
-      | InternalTimeout =>
-          s
+          { ... s,  msgHistory: s.msgHistory.setAdd(Vote(am._2)),
+                    msgBuffer: s.msgBuffer.setBy(am._1, msgs => msgs.setAdd(Vote(am._2))) }
+      | StartTimeout(t) =>
+           { ... s, activeTimeouts: s.activeTimeouts.setBy(v, ato => ato.setAdd(t)) }
     }
   })
 
