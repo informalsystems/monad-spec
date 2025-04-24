@@ -35,8 +35,8 @@ type LocalState = {
   // Variables from Algorithm 4
   votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
   proposals: Set[Proposal],
-  timeouts : int -> Set[TimeoutMsg],
-  broadcast_timeout: int -> bool,
+  timeouts : int -> Set[TimeoutMsg], //mapping from view number to set of timeout messages (Alg 4 line 17)
+  broadcast_timeout: int -> bool, //mapping from view number to boolean to ensure only one timeout is broadcasted (Alg 4 line 21/22)
   address: Address,   //This is not in the paper, but we need it to identify the process
 }
 
@@ -125,7 +125,7 @@ pure def fire_timeout_event(state: LocalState, timeout: TimeoutEvent): Consensus
 type Ledger = List[Proposal] 
 type ProposalID = {seq: int, view: int, byzantine: int} 
 type Signature = Address // let's just add the sender address as a signature
-type StateHash = List[ProposalID]
+type StateHash = List[ProposalID] //We don't model hashes explicitly, but by the assumption on collision-free hash functions, we can use this model to test for equality.
 
 
 /// ⟨view, proposal id, block header, σ, nec⟩ (page 8)
@@ -198,6 +198,7 @@ type NEC = {
   c: Set[NoEndorsementMsg]
 }
 
+/// //We don't model hashes explicitly, but by the assumption on collision-free hash functions, we can use this model to test for equality.
 type BlockHash = {
   seq: int,
   payload_hash: str,
@@ -516,7 +517,7 @@ pure def increment_view(view: int, s: LocalState): ConsensusResult = {
 pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , ConsensusResult, bool)  = {
   val v = t.view
 
-  if (v < s.curView) (None, {state: s , output: Set()}, false)
+  if (v < s.curView) (None, {state: s , output: Set()}, false) // line 29
   else {
     val co1 = increment_view(t.tip.block_header.qc.view, s)
     val s1 = co1.state
@@ -533,13 +534,14 @@ pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , ConsensusRe
       val tc = build_tc(acc_timeouts, s3.address)
       val co3 = increment_view(tc.view, s3)
       (Some(tc), {state: co3.state, output: co3.output.union(effects)}, false) //TODO: do we need to carry the effects of the previous increment_view here
+                                                                               // line 20 
     }
-    else if(acc_timeouts.size() >= F + 1 and not (s3.broadcast_timeout.getOrElse(v, false))) {
+    else if(acc_timeouts.size() >= F + 1 and not (s3.broadcast_timeout.getOrElse(v, false))) { // lines 22,23,24 (if branch of statement at line 21 taken)
       //TRIGGER TIMEOUT EVENT
       val s4 = {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)}
       (None, {state: s4, output: effects}, true)
     }
-    else (None, {state: s3, output: effects}, false)
+    else (None, {state: s3, output: effects}, false) // line 24 (if condition at line 21 evaluated to false)
   }
 }
 
