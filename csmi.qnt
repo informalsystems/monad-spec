@@ -30,6 +30,10 @@ module CSMI {
     (Environment[p, s, m, te, b], p, ConsensusResult[LocalState[p, s], o]) => Environment[p, s, m, te, b]
   type FireTimeoutEvent[p, s, te, o] = (LocalState[p, s], TimeoutEvent[te]) => ConsensusResult[LocalState[p, s], o]
 
+  pure def bookkeep(env: Environment[p, s, m, te, b], f: b => b): Environment[p, s, m, te, b] = {
+    { ...env, bookkeeping: f(env.bookkeeping) }
+  }
+
   var s: Environment
 
   // This specification is event triggered, so a process step can only be triggered by a message or a timeout
@@ -126,51 +130,69 @@ module CSMI {
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b]
   ): bool = {
-    nondet v = oneOf(processes)
+    // pick a process that has a message available in its buffer or a timeout
+    nondet v = oneOf(
+      processes.filter(v =>
+        s.msgBuffer.get(v) != Set() or s.activeTimeouts.get(v) != Set()
+      )
+    )
     any {
       receive_some_msg(v, receive_message, apply_effect),
       some_timeout(v, fire_timeout_event, apply_effect),
     }
   }
 
+  action step_no_timeout(
+    receive_message: ReceiveMessage[p, s, m, o],
+    apply_effect: ApplyEffect[p, s, m, te, o, b]
+  ): bool = {
+    // pick a process that has a message available in its buffer or a timeout
+    nondet v = oneOf(
+      processes.filter(v => s.msgBuffer.get(v) != Set())
+    )
+    receive_some_msg(v, receive_message, apply_effect)
+  }
+
   //
   // Accelerated semantics (multiple process may receive multiple messages/timeouts in one action)
   //
 
-  // Returns the new state after each message in the msgs map is delivered to the respective receiver
-  // pure def apply_acceleration_msgs (state: Environment[m], msgs: ProcessID -> Set[m]): Environment[m] =
-  //   msgs.keys().fold(state, (s, v) =>
-  //     msgs.get(v).fold(s, (s2, msg) =>
-  //       receive_one_message(s2, v, msg)
-  //     ))
+  action receive_msg_accelerated(
+    receive_message: ReceiveMessage[p, s, m, o],
+    apply_effect: ApplyEffect[p, s, m, te, o, b]
+  ): bool = all {
+    nondet msgs = processes.map(v =>
+      s.msgBuffer.get(v).powerset().exclude(Set(Set())).map(m => (v, m))
+    ).flatten().powerset().oneOf()
+    val deliver = msgs.setToMap()
+    s' = deliver.keys().fold(s, (s, v) =>
+      deliver.get(v).fold(
+        s,
+        (s2, msg) => receive_one_message(s, v, msg, receive_message, apply_effect))
+    )
+  }
 
-  // pure def apply_acceleration_timeout (state: Environment[s, m, te, b] timeouts: ProcessID -> Set[TimeoutEvent]): Environment[s, m, te, b]=
-  //   timeouts.keys().fold(state, (s, v) =>
-  //     timeouts.get(v).fold(s, (s2, timeout) =>
-  //       fire_one_timeout_event(s2, v, timeout)
-  //     ))
+  action receive_timeout_accelerated(
+    fire_timeout_event: FireTimeoutEvent[p, s, te, o],
+    apply_effect: ApplyEffect[p, s, m, te, o, b]
+  ): bool = all {
+     nondet timeouts = processes.map(v =>
+       s.activeTimeouts.get(v).powerset().exclude(Set(Set())).map(t => (v, t))
+     ).flatten().powerset().oneOf()
+     val deliver = timeouts.setToMap()
+     s' = deliver.keys().fold(s, (s, v) =>
+       deliver.get(v).fold(s, (s2, timeout) =>
+         fire_one_timeout_event(s2, v, timeout, fire_timeout_event, apply_effect)
+       )
+     )
+  }
 
-  // // non-deterministically pick a set of processes. For each, non-deterministically pick a set of votes
-  // // and deliver them to the process in one action.
-  // action acceleration_msgs =
-  //   nondet msgs = processes.map(v => s.msgBuffer.get(v).powerset().exclude(Set(Set())).map(m => (v, m)))
-  //                 .flatten().powerset().oneOf()
-  //   val deliver = msgs.setToMap()
-  //   s' =  apply_acceleration_msgs(s, deliver)
-
-  // action acceleration_timeouts =
-  //   nondet timeouts = processes.map(v => s.activeTimeouts.get(v).powerset().exclude(Set(Set())).map(t => (v, t)))
-  //                 .flatten().powerset().oneOf()
-  //   val deliver = timeouts.setToMap()
-  //   s' =  apply_acceleration_timeout(s, deliver)
-
-
-  // action accelerated_step = any {
-  //   acceleration_msgs,
-  //   acceleration_timeouts,
-  // }
-
-  pure def bookkeep(env: Environment[p, s, m, te, b], f: b => b): Environment[p, s, m, te, b] = {
-    { ...env, bookkeeping: f(env.bookkeeping) }
+  action step_accelerated(
+    receive_message: ReceiveMessage[p, s, m, o],
+    fire_timeout_event: FireTimeoutEvent[p, s, te, o],
+    apply_effect: ApplyEffect[p, s, m, te, o, b]
+  ): bool = any {
+    receive_msg_accelerated(receive_message, apply_effect),
+    receive_timeout_accelerated(fire_timeout_event, apply_effect)
   }
 }

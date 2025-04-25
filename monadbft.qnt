@@ -772,6 +772,7 @@ module monadbft {
 
 
   action step = CSMI::step(receive_message, fire_timeout_event, apply_effect)
+  action step_no_timeout = CSMI::step_no_timeout(receive_message, apply_effect)
  } // end of module monadbft
 
 
