@@ -128,7 +128,8 @@ module CSMI {
   action step(
     receive_message: ReceiveMessage[p, s, m, o],
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
-    apply_effect: ApplyEffect[p, s, m, te, o, b]
+    apply_effect: ApplyEffect[p, s, m, te, o, b],
+    timeout_chance: int // between 0 and 100
   ): bool = {
     // pick a process that has a message available in its buffer or a timeout
     nondet v = oneOf(
@@ -136,9 +137,11 @@ module CSMI {
         s.msgBuffer.get(v) != Set() or s.activeTimeouts.get(v) != Set()
       )
     )
-    any {
-      receive_some_msg(v, receive_message, apply_effect),
+    nondet timeout_frequency_control = 1.to(100).oneOf()
+    if (timeout_frequency_control <= timeout_chance) {
       some_timeout(v, fire_timeout_event, apply_effect),
+    } else {
+      receive_some_msg(v, receive_message, apply_effect),
     }
   }
 

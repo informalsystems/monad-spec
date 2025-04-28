@@ -773,7 +773,8 @@ module monadbft {
     })
 
 
-  action step = CSMI::step(receive_message, fire_timeout_event, apply_effect)
+  pure val TIMEOUT_PROBABILITY = 2 // 2%
+  action step = CSMI::step(receive_message, fire_timeout_event, apply_effect, TIMEOUT_PROBABILITY)
   action step_no_timeout = CSMI::step_no_timeout(receive_message, apply_effect)
  } // end of module monadbft
 
