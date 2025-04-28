@@ -696,8 +696,10 @@ module monadbft {
       sigma: "v1",
     }
 
-  pure val initial_message = Prop(
-    build_proposal(1, build_block(genesis_qc, "first block"), None, None, "v1")
+  pure val initial_messages = Set(
+    Prop(
+      build_proposal(1, build_block(genesis_qc, "first block"), None, None, "v1")
+    )
   )
 
   pure def initialize_process(process_id: Address): LocalState = {
@@ -719,7 +721,7 @@ module monadbft {
     msgHistory: Set(),
   }
 
-  action init = CSMI::init(initialize_process, initial_message, initial_bookkeeping)
+  action init = CSMI::init(initialize_process, initial_messages, initial_bookkeeping)
 
   // This is the function that contains all the message handlers of the algorithm
   pure def receive_message(state: LocalState, msg: Message): ConsensusResult =

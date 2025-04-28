@@ -5,7 +5,7 @@ module CSMI {
   // FIXME: I think this will not work with Apalache. However, I can't test this as this is resulting in a
   // huge spec once we resolve type aliases as the types are too complex. This exceeds the gRPC limit which
   // is already quite high.
-  // My alternative approachh (sending processes as a param in init and step) is not working due to some
+  // My alternative approach (sending processes as a param in init and step) is not working due to some
   // weird effect error on step.
   const processes: Set[p]
 
@@ -40,12 +40,12 @@ module CSMI {
   // as a result we need either messages or timeouts in the initial state
   action init(
     initialize_process: (p) => LocalState[p, s],
-    initial_message: m,
+    initial_messages: Set[m],
     initial_bookkeeping: b
   ): bool = all {
     s' = {
       system: processes.mapBy(v => initialize_process(v)),
-      msgBuffer: processes.mapBy(v => Set(initial_message)),
+      msgBuffer: processes.mapBy(v => initial_messages),
       activeTimeouts: processes.mapBy(v => Set()),
       bookkeeping: initial_bookkeeping,
     }
