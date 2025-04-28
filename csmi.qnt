@@ -2,6 +2,8 @@
 
 /// Consensus State Machine Interface (CSMI)
 module CSMI {
+  import basicSpells.* from "basicSpells"
+
   // FIXME: I think this will not work with Apalache. However, I can't test this as this is resulting in a
   // huge spec once we resolve type aliases as the types are too complex. This exceeds the gRPC limit which
   // is already quite high.
@@ -131,17 +133,15 @@ module CSMI {
     apply_effect: ApplyEffect[p, s, m, te, o, b],
     timeout_chance: int // between 0 and 100
   ): bool = {
-    // pick a process that has a message available in its buffer or a timeout
-    nondet v = oneOf(
-      processes.filter(v =>
-        s.msgBuffer.get(v) != Set() or s.activeTimeouts.get(v) != Set()
-      )
-    )
     nondet timeout_frequency_control = 1.to(100).oneOf()
-    if (timeout_frequency_control <= timeout_chance) {
-      some_timeout(v, fire_timeout_event, apply_effect),
+    if (timeout_frequency_control <= timeout_chance and s.activeTimeouts.values().flatten() != Set()) {
+      // pick a process that has an active timeout
+      nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != Set()))
+      some_timeout(v, fire_timeout_event, apply_effect)
     } else {
-      receive_some_msg(v, receive_message, apply_effect),
+      // pick a process that has a message available in its buffer
+      nondet v = oneOf(processes.filter(v => s.msgBuffer.get(v) != Set()))
+      receive_some_msg(v, receive_message, apply_effect)
     }
   }
 
@@ -193,9 +193,14 @@ module CSMI {
   action step_accelerated(
     receive_message: ReceiveMessage[p, s, m, o],
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
-    apply_effect: ApplyEffect[p, s, m, te, o, b]
+    apply_effect: ApplyEffect[p, s, m, te, o, b],
+    timeout_chance: int // between 0 and 100
   ): bool = any {
-    receive_msg_accelerated(receive_message, apply_effect),
-    receive_timeout_accelerated(fire_timeout_event, apply_effect)
+    nondet timeout_frequency_control = 1.to(100).oneOf()
+    if (timeout_frequency_control <= timeout_chance and s.activeTimeouts.values().flatten() != Set()) {
+      receive_timeout_accelerated(fire_timeout_event, apply_effect)
+    } else {
+      receive_msg_accelerated(receive_message, apply_effect),
+    }
   }
 }
