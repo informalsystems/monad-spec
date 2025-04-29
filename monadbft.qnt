@@ -207,9 +207,8 @@ module monadbft {
     s.process_id == "v1"
 
   /// Check if qc1 extends qc2
-  pure def extend (qc1: QC, qc2: QC, ancestors: ProposalID -> Set[ProposalID]): bool =
+  pure def extend(qc1: QC, qc2: QC, ancestors: ProposalID -> Set[ProposalID]): bool =
     ancestors.getOrElse(qc1.proposal_id, Set()).contains(qc2.proposal_id)
-    
 
   /// Check if two proposals are conflicting
   pure def conflicting_props (p1: Proposal, p2: Proposal, ancestors: ProposalID -> Set[ProposalID]): bool =
@@ -218,7 +217,6 @@ module monadbft {
       not(extend(p2.block.qc, p1.block.qc, ancestors)),
     }
 
-
   /// Extract the tips from a set of timeout messages
   /// This function retruns a set of Tips. 
   pure def get_tips_from_timeouts(msgs: Set[TimeoutMsg]): Set[Tip]= {
@@ -226,7 +224,7 @@ module monadbft {
   }
 
   /// Find the tip with the highest view out of a set of tip
-  pure def highest_tip (tips: Set[Tip]): Tip = {
+  pure def highest_tip(tips: Set[Tip]): Tip = {
     // argmax (t∈tips) t.view
     val init = tips.fold(List(), (acc, t) => acc.append(t))[0] //TODO: this is just a placeholder, refractor after debugging.
     val max_tip = tips.fold(init, (acc, t) => {
@@ -482,43 +480,51 @@ module monadbft {
   /// We pass view instead of cert to simplify the code.
   pure def increment_view(view: int, s: LocalState): ConsensusResult = {
     if (view >= s.curView)
-      {state :{ ... s, curView: view+1}, output: Set(StartTimeout(view+1))} // Increment view to next and reset the timer, old timers are discarded in apply_effect.
+      // Increment view to next and reset the timer, old timers are discarded by CSMI.
+      { state: { ...s, curView: view + 1 }, output: Set(StartTimeout(view + 1)) }
     else
-      {state:s , output: Set()} // No change
+      CSMI::no_output(s)
   }
 
 
   /// Alg 4 line 10
   /// Output = (TC, Side effects, bool: whether to trigger timeout event)
-  pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , ConsensusResult, bool)  = {
+  pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC], ConsensusResult, bool)  = {
     val v = t.view
 
-    if (v < s.curView) (None, {state: s , output: Set()}, false)
-    else {
-      val co1 = increment_view(t.tip.block_header.qc.view, s)
-      val s1 = co1.state
-      
-      val co2 = increment_view(t.tip.view, s1)
-      val s2 = co2.state
-      val effects = co1.output.union(co2.output)  
-      
+    if (v < s.curView) (None, CSMI::no_output(s), false) else
+
+    pure val res = increment_view(t.tip.block_header.qc.view, s)
+      .chain(s => increment_view(t.tip.view, s))
+
+    pure val res2 = res.state.chain_state(s => {
       // Timeout is new, let's accumulate it
-      val acc_timeouts = s2.timeouts.getOrElse(v, Set()).setAdd(t)
-      val s3 = {...s2, timeouts: s2.timeouts.put(v, acc_timeouts)}
-      // Check if we have a quorum
-      if (acc_timeouts.size() >= Q) {
-        val tc = build_tc(acc_timeouts, s3.process_id)
-        val co3 = increment_view(tc.view, s3)
-        (Some(tc), {state: co3.state, output: co3.output.union(effects)}, false) //TODO: do we need to carry the effects of the previous increment_view here
-      }
-      else if(acc_timeouts.size() >= F + 1 and not (s3.broadcast_timeout.getOrElse(v, false))) {
-        //TRIGGER TIMEOUT EVENT
-        val s4 = {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)}
-        val te = trigger_timeout_event(s4)
-        (None, {state: te.state, output: effects.union(te.output)}, true)
-      }
-      else (None, {state: s3, output: effects}, false)
-    }
+      val acc_timeouts = s.timeouts.getOrElse(v, Set()).setAdd(t)
+      s.add_timeouts(v, acc_timeouts).chain_state(s => {
+        // Check if we have a quorum
+        if (acc_timeouts.size() >= Q) {
+          val tc = build_tc(acc_timeouts, s.process_id)
+          (Some(tc), increment_view(tc.view, s), false)
+        } else if (acc_timeouts.size() >= F + 1 and not (s.broadcast_timeout.getOrElse(v, false))) {
+          // TRIGGER TIMEOUT EVENT
+          (None, s.add_broadcast_timeout(v).trigger_timeout_event(), true)
+        } else {
+          (None, CSMI::no_output(s), false)
+        }
+      })
+    })
+
+    (res2._1, CSMI::join_results(res, res2._2), res2._3)
+  }
+
+  pure def add_timeouts(s: LocalState, view: int, timeouts: Set[TimeoutMsg]): LocalState = {
+    { ...s, timeouts: s.timeouts.put(view, timeouts) }
+  }
+
+  pure def add_broadcast_timeout(s: LocalState, view: int): LocalState = {
+    // TODO: a set would be a better data structure for this
+    // Also, we should initialize those sets with the validators and use `set` instead of `put` everywhere
+    { ...s, broadcast_timeout: s.broadcast_timeout.put(view, true) }
   }
 
   pure def add_votes(s: LocalState, proposal_id: ProposalID, votes: Set[VoteMsg]): LocalState =

@@ -64,7 +64,7 @@ module CSMIBase {
     f: (LocalState[p, s]) => ConsensusResult[LocalState[p, s], o]
   ): ConsensusResult[LocalState[p, s], o] = {
     pure val new_res = f(res.state)
-    { state: new_res.state, output: res.output.union(new_res.output) }
+    join_results(res, new_res)
   }
 
   pure def chain_state(
@@ -72,6 +72,13 @@ module CSMIBase {
     f: (LocalState[p, s]) => r
   ): r = {
     f(state)
+  }
+
+  pure def join_results(
+    res1: ConsensusResult[LocalState[p, s], o],
+    res2: ConsensusResult[LocalState[p, s], o]
+  ): ConsensusResult[LocalState[p, s], o] = {
+    { state: res2.state, output: res1.output.union(res2.output) }
   }
 
   pure def no_output(s: LocalState[p, s]): ConsensusResult[LocalState[p, s], o] = {
