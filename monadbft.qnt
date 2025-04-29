@@ -4,6 +4,8 @@ module monadbft {
   import basicSpells.* from "./basicSpells"
   import CSMIBase as CSMI from "csmi"
   import CSMIBase.chain from "csmi"
+  import CSMIBase.chain_producing_return from "csmi"
+  import CSMIBase.chain_consuming_return from "csmi"
   import CSMIState(processes = validators) as CSMI from "csmi"
 
   val BLOCK_PAYLOAD = "VALID_TRANSACTION" //TODO: this is just a placeholder
@@ -59,6 +61,7 @@ module monadbft {
   type ConsensusResult = CSMI::ConsensusResult[LocalState, ConsensusOutput]
   type Environment = CSMI::Environment[Address, State, Message, TimeoutEventData, Bookkeeping]
   type TimeoutEvent = CSMI::TimeoutEvent[TimeoutEventData]
+  type ReturnWithConsensusResult[r] = CSMI::ReturnWithConsensusResult[r, Address, LocalState, ConsensusOutput]
 
 
 
@@ -522,26 +525,26 @@ module monadbft {
     }
   }
 
-
   /// Alg 4 line 25
-  pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC], ConsensusResult) = {
+  pure def handle_vote(vote: VoteMsg, s: LocalState): ReturnWithConsensusResult[Option[QC]] = {
     val v = vote.view
     val id = vote.proposal_id
     
-    if (v < s.curView) (None,{state: s, output: Set()})
-    else {
-      // Vote is new, let's accumulate it
-      val acc_votes = s.votes.getOrElse(id, Set()).setAdd(vote)
-      val s1 = {...s, votes: s.votes.put(id, acc_votes)}
+    if (v < s.curView) CSMI::create_return(None, CSMI::no_output(s)) else
+
+    // Vote is new, let's accumulate it
+    val acc_votes = s.votes.getOrElse(id, Set()).setAdd(vote)
+
+    CSMI::no_output({ ...s, votes: s.votes.put(id, acc_votes) }).chain_producing_return(s => {
       // Check if we have a quorum
       if (acc_votes.size() >= Q) {
-        val qc = build_qc(acc_votes, s.process_id, state_hash(s1))
-        (Some(qc), increment_view(qc.view, s1))
+        val qc = build_qc(acc_votes, s.process_id, state_hash(s))
+        (Some(qc), increment_view(qc.view, s))
+      } else {
+        (None, CSMI::no_output(s))
       }
-      else (None, {state: s1, output: Set()})
-      }
-    }
-
+    })
+  }
 
   //
   // Algorithm 2 (page 15)
@@ -553,11 +556,9 @@ module monadbft {
   pure def receive_vote_msg(s: LocalState, v: VoteMsg): ConsensusResult = {
     if (not(s.is_leader())) CSMI::no_output(s) else
     // Line 3
-    val res = handle_vote(v, s)
-    val qc = res._1
-    if (qc == None) res._2 else
+    handle_vote(v, s).chain_consuming_return((s, qc) => {
+      if (qc == None) CSMI::no_output(s) else
 
-    res._2.chain(s => {
       val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
       val p = build_proposal(s.curView, new_block, None, None, s.process_id)
       { state: s, output: Set(BroadcastProp(p)) }

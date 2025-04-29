@@ -25,6 +25,8 @@ module CSMIBase {
     (Environment[p, s, m, te, b], p, Set[o]) => Environment[p, s, m, te, b]
   type FireTimeoutEvent[p, s, te, o] = (LocalState[p, s], TimeoutEvent[te]) => ConsensusResult[LocalState[p, s], o]
 
+  type ReturnWithConsensusResult[r, p, s, o] = { return: r, consensus_result: ConsensusResult[LocalState[p, s], o] }
+
   pure def bookkeep(env: Environment[p, s, m, te, b], f: b => b): Environment[p, s, m, te, b] = {
     { ...env, bookkeeping: f(env.bookkeeping) }
   }
@@ -65,6 +67,32 @@ module CSMIBase {
   ): ConsensusResult[LocalState[p, s], o] = {
     pure val new_res = f(res.state)
     { state: new_res.state, output: res.output.union(new_res.output) }
+  }
+
+  pure def chain_consuming_return(
+    return: ReturnWithConsensusResult[r, p, s, o],
+    f: (LocalState[p, s], r) => ConsensusResult[LocalState[p, s], o]
+  ): ConsensusResult[LocalState[p, s], o] = {
+    pure val new_res = f(return.consensus_result.state, return.return)
+    { state: new_res.state, output: return.consensus_result.output.union(new_res.output) }
+  }
+  pure def chain_producing_return(
+    res: ConsensusResult[LocalState[p, s], o],
+    f: (LocalState[p, s]) => (r, ConsensusResult[LocalState[p, s], o])
+  ): ReturnWithConsensusResult[r, p, s, o] = {
+    pure val new_res = f(res.state)
+    pure val consensus_result = {
+      ...new_res._2,
+      output: res.output.union(new_res._2.output)
+    }
+    { return: new_res._1, consensus_result: consensus_result }
+  }
+
+  pure def create_return(
+    return: r,
+    res: ConsensusResult[LocalState[p, s], o],
+  ): ReturnWithConsensusResult[r, p, s, o] = {
+    { return: return, consensus_result: res }
   }
 
   pure def no_output(s: LocalState[p, s]): ConsensusResult[LocalState[p, s], o] = {
