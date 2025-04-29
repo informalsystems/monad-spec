@@ -744,31 +744,30 @@ module monadbft {
     else
       { state: state, output: Set() }
 
-  pure def apply_effect(env: Environment, v: Address, res: ConsensusResult): Environment =
-  // TODO
-    val new = { ... env, system: env.system.set(v, res.state) }
-    res.output.fold(new, (s, x) => {
+  pure def apply_effect(env: Environment, v: Address, outputs: Set[ConsensusOutput]): Environment =
+    outputs.fold(env, (e, x) => {
       match x {
         | BroadcastProp(p) =>
-            { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Prop(p)))) } // update propBuffers
+            CSMI::broadcast(e, Prop(p))
         | BroadCastTimeout(t) =>
-            { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Timeout(t)))) } // update propBuffers
+            CSMI::broadcast(e, Timeout(t))
         | Commit(p) =>
-            CSMI::bookkeep(s, b => {
+            CSMI::bookkeep(e, b => {
               ...b,
               committed_proposals: b.committed_proposals.setBy(v, ps => ps.setAdd(p))
             })
         | EarlyConfirmation(p) =>
-            s
+            e
         | Confirmation(p) =>
-            s
+            e
         | SendVoteToNextLeader(am) =>
-            pure val updated_env = CSMI::bookkeep(s, b => {
+            pure val updated_env = CSMI::bookkeep(e, b => {
               ...b, msgHistory: b.msgHistory.setAdd(Vote(am._2)),
             })
-            { ...updated_env, msgBuffer: s.msgBuffer.setBy(am._1, msgs => msgs.setAdd(Vote(am._2))) }
+
+            CSMI::broadcast(updated_env, Vote(am._2))
         | StartTimeout(t) =>
-            { ... s, activeTimeouts: s.activeTimeouts.setBy(v, ato => ato.setAdd(t)) }
+            CSMI::timeout(e, v, t)
       }
     })
 
