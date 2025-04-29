@@ -175,7 +175,22 @@ module monadbft {
     nec: Option[NEC],
   }
 
+  //
+  // State manipulation utilities
+  //
 
+  pure def add_timeouts(s: LocalState, view: int, timeouts: Set[TimeoutMsg]): LocalState = {
+    { ...s, timeouts: s.timeouts.put(view, timeouts) }
+  }
+
+  pure def add_broadcast_timeout(s: LocalState, view: int): LocalState = {
+    // TODO: a set would be a better data structure for this
+    // Also, we should initialize those sets with the validators and use `set` instead of `put` everywhere
+    { ...s, broadcast_timeout: s.broadcast_timeout.put(view, true) }
+  }
+
+  pure def add_votes(s: LocalState, proposal_id: ProposalID, votes: Set[VoteMsg]): LocalState =
+    { ...s, votes: s.votes.put(proposal_id, votes) }
 
   //
   // Utility functions
@@ -273,9 +288,8 @@ module monadbft {
   }
 
   /// Get a proposal based on the proposal id
-  pure def get_proposal(id: ProposalID, proposals: Set[Proposal] ): Proposal =
-  proposals.filter(p => p.proposal_id == id).getOnlyElement()
-
+  pure def get_proposal(s: LocalState, id: ProposalID): Proposal =
+    s.proposals.filter(p => p.proposal_id == id).getOnlyElement()
 
   /// Execute the proposal
   /// TODO: This is fine as it is, but we should think if we can do better here.
@@ -438,7 +452,6 @@ module monadbft {
     }
   }
 
-
   /// Alg 3 line 1
   /// Gathers all validator tips from a timeout certificate or timeout messages.
   ///   - It aborts and returns nil if any tip fails the fresh‑proposal checks.
@@ -447,33 +460,30 @@ module monadbft {
   pure def find_high_tip(tc: TC): Option[Tip] = {
     val tips = tc.tips
     // The first if else block (L3 -> L7) is skipped because we implemented a separate function for sets of timeout messages (find_high_tip_from_messages).
-    if (not (tips.forall(t => t.verify_fresh_proposal()))) None
-    else {
+    if (not (tips.forall(t => t.verify_fresh_proposal())))
+      None
+    else
       // argmax (t∈tips) t.view
       val max_tip = highest_tip(tips)
       Some(max_tip)
-    }
   }
 
   /// Alg 3 line 1
   /// Does the same as find_high_tip(tc), but for a set of timeout messages.
   pure def find_high_tip_from_messages(msgs: Set[TimeoutMsg]): Option[Tip] = {
     val tips = get_tips_from_timeouts(msgs)
-    if (not (tips.forall(t => t.verify_fresh_proposal()))) None
-    else {
-      // argmax (t∈tips) t.view
+    if (not(tips.forall(t => t.verify_fresh_proposal())))
+      None
+    else
+      // argmax (t ∈ tips) t.view
       val max_tip = highest_tip(tips)
       Some(max_tip)
-    }
   }
-
-  
 
   //
   // Algorithm 4 (page 22)
   // Pacemaker for View Synchronization
   //
-
 
   /// Alg 4 line 2 / Alg 4 line 6
   /// Update the local state with a new view.
@@ -489,10 +499,10 @@ module monadbft {
 
   /// Alg 4 line 10
   /// Output = (TC, Side effects, bool: whether to trigger timeout event)
-  pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC], ConsensusResult, bool)  = {
+  pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC], ConsensusResult)  = {
     val v = t.view
 
-    if (v < s.curView) (None, CSMI::no_output(s), false) else
+    if (v < s.curView) (None, CSMI::no_output(s)) else
 
     pure val res = increment_view(t.tip.block_header.qc.view, s)
       .chain(s => increment_view(t.tip.view, s))
@@ -504,32 +514,18 @@ module monadbft {
         // Check if we have a quorum
         if (acc_timeouts.size() >= Q) {
           val tc = build_tc(acc_timeouts, s.process_id)
-          (Some(tc), increment_view(tc.view, s), false)
+          (Some(tc), increment_view(tc.view, s))
         } else if (acc_timeouts.size() >= F + 1 and not (s.broadcast_timeout.getOrElse(v, false))) {
           // TRIGGER TIMEOUT EVENT
-          (None, s.add_broadcast_timeout(v).trigger_timeout_event(), true)
+          (None, s.add_broadcast_timeout(v).trigger_timeout_event())
         } else {
-          (None, CSMI::no_output(s), false)
+          (None, CSMI::no_output(s))
         }
       })
     })
 
-    (res2._1, CSMI::join_results(res, res2._2), res2._3)
+    (res2._1, CSMI::join_results(res, res2._2))
   }
-
-  pure def add_timeouts(s: LocalState, view: int, timeouts: Set[TimeoutMsg]): LocalState = {
-    { ...s, timeouts: s.timeouts.put(view, timeouts) }
-  }
-
-  pure def add_broadcast_timeout(s: LocalState, view: int): LocalState = {
-    // TODO: a set would be a better data structure for this
-    // Also, we should initialize those sets with the validators and use `set` instead of `put` everywhere
-    { ...s, broadcast_timeout: s.broadcast_timeout.put(view, true) }
-  }
-
-  pure def add_votes(s: LocalState, proposal_id: ProposalID, votes: Set[VoteMsg]): LocalState =
-    { ...s, votes: s.votes.put(proposal_id, votes) }
-
   /// Alg 4 line 25
   pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC], ConsensusResult) = {
     val v = vote.view
@@ -548,7 +544,7 @@ module monadbft {
       } else {
         (None, CSMI::no_output(s))
       }
-    })//.wrap_result()
+    })
   }
 
   //
@@ -577,126 +573,117 @@ module monadbft {
   /// As opposed to the paper, we write the timeout event as a function that is called by the timeout handler.
   /// Instead of of a "upon" statement that gets triggered.
   /// Warning: The upon trigger event block is not clear on its synchrony assumptions. 
-  pure def trigger_timeout_event (s: LocalState): ConsensusResult = {
+  pure def trigger_timeout_event(s: LocalState): ConsensusResult = {
+    pure val timeout_msg = {
+      view: s.curView,
+      // TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
+      tip: s.tip.unwrap(),
+      tc: { view: s.curView, high_tip: None, tips: Set(), sigma: s.process_id },
+      sigma: s.process_id
+    }
 
-    if (false)  { state: s, output: Set()}  //TODO: delete me after debugging
-    else {
-      val s1 = {...s, highest_voted_view: max(s.highest_voted_view, s.curView)}
-      val tc_aux = {
-        view: s.curView,
-        high_tip: None,
-        tips: Set(),
-        sigma: s.process_id
-      }
-      val timeout_msg = {
-        view: s.curView,
-        tip: s.tip.unwrap(), //TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
-        tc: tc_aux,
-        sigma: s.process_id
-      }
-      { state: s1, output: Set(BroadCastTimeout(timeout_msg))}
+    {
+      state: { ...s, highest_voted_view: max(s.highest_voted_view, s.curView) },
+      output: Set(BroadCastTimeout(timeout_msg))
     }
   }
 
   /// Alg 2 line 10 / line 52 (leader/ non-leader)
-  pure def receive_timeout_msg (s: LocalState, t: TimeoutMsg): ConsensusResult = {
-    val res = handle_timeout(t, s)
-    val tc = res._1
-    val s0 = res._2.state
-    val trigger_timeout = res._3
+  pure def receive_timeout_msg(s: LocalState, t: TimeoutMsg): ConsensusResult = {
+    pure val res = handle_timeout(t, s)
+    pure val tc = res._1
+    res._2.chain(s => {
+      // line 52 (non-leader)
+      if (not(s.is_leader())) CSMI::no_output(s) else
 
-    val co = if (trigger_timeout) trigger_timeout_event(s0) else { state: s0, output: Set()} // calling the timeout event synchronously in the timeout message handler
-    val s1 = co.state
-    val effects = co.output.union(res._2.output)
+      //line 11 (leader)
 
-    if (s.is_leader()){
-      //line 11
-      if (tc != None) {
-        val s2 = {... s1, last_tc: tc, high_tip: tc.unwrap().high_tip}
-        val high_tip = tc.unwrap().high_tip.unwrap() //TODO: it should be safe to unwrap here, but we should check. 
+      // Not enough timeout messages to form tc
+      if (tc == None) CSMI::no_output(s) else
 
-        if (block_present(s2, high_tip.block_header)) { //if block and its payload (block.payload) for high tip is present
+      { ...s, last_tc: tc, high_tip: tc.unwrap().high_tip }.chain_state(s => {
+        // TODO: it should be safe to unwrap here, but we should check.
+        val high_tip = tc.unwrap().high_tip.unwrap()
+
+        // if block and its payload (block.payload) for high tip is present
+        if (s.block_present(high_tip.block_header)) {
           // Line 17
-          val block = get_present_block(s2, high_tip.block_header)
-          val p = build_proposal(s2.curView, block, tc, None, s2.process_id)
-          { state: s2, output: effects.setAdd(BroadcastProp(p))}
+          val block = s.get_present_block(high_tip.block_header)
+          val p = build_proposal(s.curView, block, tc, None, s.process_id)
+          { state: s, output: Set(BroadcastProp(p)) }
         } else
           // Line 18-19-20 recoveringcurView ← true; SendRecoveryRequest(curView, high tip, tc);
           // TODO: For the moment this is replaced by fetching the block from the DA variable for debugging purposes
-          val block = get_present_block(s2, high_tip.block_header)
-          val p = build_proposal(s2.curView, block, tc, None, s2.process_id)
-          { state: s2, output: effects.setAdd(BroadcastProp(p))}
-        
-    }else
-      // Not enough timeout messages to form tc
-      { state: s1, output: effects}
-    
-    } else {
-      //line 52
-      { state: s1, output: effects}
-    }
+          val block = s.get_present_block(high_tip.block_header)
+          val p = build_proposal(s.curView, block, tc, None, s.process_id)
+          { state: s, output: Set(BroadcastProp(p)) }
+      })
+    })
   }
 
-
   // Alg 2 line 34
-  pure def receive_proposal_msg (s: LocalState, p: Proposal): ConsensusResult = {
-    
-    val co1 = match p.tc {
-      | None =>
-          {state:s, output: Set()}
-      | Some(tc) =>
-          increment_view(tc.view, s)
-    }
-    val s1 = co1.state
-    val co2 = increment_view(p.block.qc.view, s1)
-    val s2 = co2.state
-    val timers = co1.output.union(co2.output)
-    
-    //TODO: add leader check here -> Is this message coming form the leader of the view?
-    if (p.view != s2.curView) { //Warning: is the view being updated before the Leader check? Lines 35-36. 
-      { output: timers, state: s2}
-    } else if (safety_check(p) and p.view > max(s2.highest_voted_view, p.block.qc.view)) {  //Warning: The view being updated before the safety check.
+  pure def receive_proposal_msg(s: LocalState, p: Proposal): ConsensusResult = {
+    match p.tc {
+      | None => CSMI::no_output(s)
+      | Some(tc) => increment_view(tc.view, s)
+    }.chain(s => {
+      increment_view(p.block.qc.view, s)
+    }).chain(s => {
+      // TODO: add leader check here -> Is this message coming form the leader of the view?
+      // Warning: is the view being updated before the Leader check? Lines 35-36.
+      if (p.view != s.curView) CSMI::no_output(s) else
+
+      // Warning: The view being updated before the safety check.
+      if (not(safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view))) CSMI::no_output(s) else
+
       // Line 38
-      val parent_proposal = get_proposal(p.parent_id(), s2.proposals)
-      val grandparent_proposal= get_proposal( parent_proposal.parent_id(), s2.proposals)
+      pure val parent_proposal = s.get_proposal(p.parent_id())
+      pure val grandparent_proposal = s.get_proposal(parent_proposal.parent_id())
 
-      //Line 41
-      val commit = if (p.block.qc.view == parent_proposal.block.qc.view + 1)
+      // Line 41
+      pure val commit = if (p.block.qc.view == parent_proposal.block.qc.view + 1)
         Set(Commit(grandparent_proposal), Confirmation(p))
-      else Set()
+      else
+        Set()
 
-      //Line 43
-      val early_confirmation = if (p.view == p.block.qc.view + 1) //Warning; typo in the paper
+      // Line 43
+      pure val early_confirmation = if (p.view == p.block.qc.view + 1) // Warning: typo in the paper
         Set(EarlyConfirmation(parent_proposal))
-      else Set()
+      else
+        Set()
 
+      // Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor.
+      pure val reverted_ledger = if (proposal_conflicts(s.ledger, parent_proposal, s.ancestors))
+        revert_ledger(s.ledger, parent_proposal, s.ancestors)
+      else
+        s.ledger
 
-      val reverted_ledger = if (proposal_conflicts(s2.ledger, parent_proposal, s2.ancestors)) { //Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor. 
-        revert_ledger(s2.ledger, parent_proposal, s2.ancestors)
-      } else s2.ledger
+      //Line 45 - Speculate
+      pure val ledger = if (p.view == p.block.qc.view + 1)
+        execute_block(reverted_ledger, parent_proposal)
+      else
+        reverted_ledger
 
-
-      val ledger = if (p.view == p.block.qc.view + 1) //Line 45 - Speculate
-        execute_block(reverted_ledger, parent_proposal) 
-      else reverted_ledger
-
-      val s3 = {...s2, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p)}
-      val vote_msg = {
+      pure val new_state = { ...s, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p) }
+      pure val vote_msg = {
         view: p.view,
         seq: p.block.seq,
         proposal_id: p.proposal_id,
-        state_hash: state_hash(s3),
-        sigma: s3.process_id,
+        state_hash: state_hash(new_state),
+        sigma: s.process_id,
       }
-      val send_vote = Set(SendVoteToNextLeader(("v1", vote_msg))) //TODO: send to next leader
-      { output: commit.union(early_confirmation).union(send_vote).union(timers), state: s3 }
-    } else {
-      { output: timers, state: s2 }
-    }
+
+      // TODO: send to next leader
+      // [Gabriela] Question: in the paper, they send this message before updating the tip.
+      // Why do we do it after it here?
+      pure val send_vote = Set(SendVoteToNextLeader(("v1", vote_msg)))
+
+      {
+        state: new_state,
+        output: commit.union(early_confirmation).union(send_vote)
+      }
+    })
   }
-
-
-
 
   //
   // Alg 5 (page 26)
