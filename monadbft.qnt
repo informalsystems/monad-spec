@@ -35,6 +35,7 @@ type LocalState = {
   // Variables from Algorithm 4
   votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
   proposals: Set[Proposal],
+  ancestors:      ProposalID -> Set[ProposalID],     // NEW: for each proposal, its full set of ancestors
   timeouts : int -> Set[TimeoutMsg],
   broadcast_timeout: int -> bool,
   address: Address,   //This is not in the paper, but we need it to identify the process
@@ -77,6 +78,7 @@ pure def initialize_process (address: Address): LocalState =
     last_tc: None,
     tip: None,
     proposals: Set(),
+    ancestors: Map(),
     timeouts: Map(),
     broadcast_timeout: Map(),
     curView: 0,
@@ -110,7 +112,7 @@ pure def fire_timeout_event(state: LocalState, timeout: TimeoutEvent): Consensus
   if (state.curView == timeout)
     state.timeout_event()
   else
-    { state: state, output: Set() }
+    { state: state, output: Set()}
 
 // End of CSMI functional side
 
@@ -263,24 +265,25 @@ pure def state_hash(s: LocalState) : StateHash = {
 
 
 /// Check if qc1 extends qc2
-pure def extend (qc1: QC, qc2: QC): bool =
+pure def extend (qc1: QC, qc2: QC, ancestors: ProposalID -> Set[ProposalID]): bool =
   // TODO IMPLEMENT ME
-  true
+  ancestors.getOrElse(qc1.proposal_id, Set()).contains(qc2.proposal_id)
   
 
 /// Check if two QCs are conflicting
+/*
 pure def conflicting_qcs (qc1: QC, qc2: QC): bool =
   and {
     not(extend(qc1, qc2)),
     not(extend(qc2, qc1)),
   }
+*/
 
 /// Check if two proposals are conflicting
-pure def conflicting_props (p1: Proposal, p2: Proposal): bool =
+pure def conflicting_props (p1: Proposal, p2: Proposal, ancestors: ProposalID -> Set[ProposalID]): bool =
   and {
-    not(extend(p1.block.qc, p2.block.qc)),
-    not(extend(p2.block.qc, p1.block.qc)),
-
+    not(extend(p1.block.qc, p2.block.qc, ancestors)),
+    not(extend(p2.block.qc, p1.block.qc, ancestors)),
   }
 
 
@@ -351,8 +354,8 @@ pure def execute_block(ledger: Ledger, p: Proposal): Ledger = {
 }
 
 /// Check if a proposal conflicts with the ledger
-pure def proposal_conflicts(ledger: Ledger, p: Proposal): bool = {
-  ledger.select(l => conflicting_props(l, p)).length() > 0
+pure def proposal_conflicts(ledger: Ledger, p: Proposal, ancestors: ProposalID -> Set[ProposalID]): bool = {
+  ledger.select(l => conflicting_props(l, p, ancestors)).length() > 0
 }
 
 /// Revert the ledger to the common ancestor
@@ -367,7 +370,41 @@ pure def revert_ledger(ledger: Ledger, p: Proposal): Ledger = {
   })
   ledger.slice(0, index._1)
 }
+
+
+/// Revert the ledger back to the latest ancestor of p that is still in the ledger.
+/// `ancestors` maps each proposalID to the full set of its ancestor‐IDs.
+pure def revert_ledger_2(
+    ledger:   Ledger,
+    p:        Proposal,
+    ancestors: ProposalID -> Set[ProposalID]
+  ): Ledger = {
   
+  // 1) Look up the set of all ancestor IDs for p
+  val ancIds = ancestors.getOrElse(p.proposal_id, Set())
+
+  // 2) Walk the ledger and remember the last index where we saw one of those IDs
+  //    foldl((nextIndex, lastMatch), ( (idx, foundIdx), elem )) =>
+  //      if elem.proposal_id ∈ ancIds then (idx+1, idx) else (idx+1, foundIdx)
+  val result = ledger.foldl((0, -1), (acc, elem) => {
+    val idx = acc._1
+    val lastMatch = acc._2
+    if (ancIds.contains(elem.proposal_id))
+      (idx + 1, idx)
+    else
+      (idx + 1, lastMatch)
+  })
+
+  val lastIdx = result._2
+
+  // 3) If we never found a match (lastIdx == -1), just return an empty ledger
+  //    otherwise slice up through that index (inclusive)
+  if (lastIdx < 0) {
+    List()
+  } else {
+    ledger.slice(0, lastIdx + 1)
+  }
+}
 
 
 /// Check if a block was alread received
@@ -434,7 +471,7 @@ pure def safety_check(p: Proposal): bool = {
         p.nec.unwrap().view == p.view,
         p.nec.unwrap().highqc_view == p.block.qc.view,
       }
-    else (p.block.block_hash == p_tc.high_tip.unwrap().block_header.block_hash) // The unwrap will throw an error if the option is None, but it should not be
+    else p.block.block_hash == p_tc.high_tip.unwrap().block_header.block_hash // The unwrap will throw an error if the option is None, but it should not be
   }
   else false
 }
@@ -556,7 +593,8 @@ pure def handle_timeout(t: TimeoutMsg, s: LocalState): (Option[TC] , ConsensusRe
     else if(acc_timeouts.size() >= F + 1 and not (s3.broadcast_timeout.getOrElse(v, false))) {
       //TRIGGER TIMEOUT EVENT
       val s4 = {...s3, broadcast_timeout: s3.broadcast_timeout.put(v, true)}
-      (None, {state: s4, output: effects}, true)
+      val te = timeout_event(s4)
+      (None, {state: te.state, output: effects.union(te.output)}, true)
     }
     else (None, {state: s3, output: effects}, false)
   }
@@ -620,7 +658,9 @@ pure def receive_vote (s: LocalState, v: VoteMsg): ConsensusResult = {
 /// Instead of of a "upon" statement that gets triggered.
 /// Warning: The upon trigger event block is not clear on its synchrony assumptions. 
 pure def timeout_event (s: LocalState): ConsensusResult = {
-  if (s.is_leader())  { state: s, output: Set()} //Leader does nothing upon receival of timeout event
+  //if (s.is_leader())  { state: s, output: Set()} //Leader does nothing upon receival of timeout event
+  //if (s.curView < 8 or s.curView % 5 != 2) { state: s, output: Set()} //TODO: debug, start timing out after view 5
+  if (false)  { state: s, output: Set()}  
   else {
     val s1 = {...s, highest_voted_view: max(s.highest_voted_view, s.curView)}
     val tc_aux = {
@@ -712,8 +752,8 @@ pure def receive_proposal (s: LocalState, p: Proposal): ConsensusResult = {
     else Set()
 
 
-    val reverted_ledger = if (proposal_conflicts(s2.ledger, parent_proposal)) { //Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor. 
-      revert_ledger(s2.ledger, parent_proposal)
+    val reverted_ledger = if (proposal_conflicts(s2.ledger, parent_proposal, s2.ancestors)) { //Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor. 
+      revert_ledger_2(s2.ledger, parent_proposal, s2.ancestors)
     } else s2.ledger
 
 
@@ -770,6 +810,8 @@ type Environment = {
   // for analysis purposes
   committed_proposals: Address -> Set[Proposal],
   msgHistory: Set[Message],
+  timeoutHistory: Set[(Address, TimeoutEvent)],
+  lastMsg: Option[Message], // last message sent
 }
 
 var s: Environment
@@ -781,6 +823,7 @@ def safety =
   a.forall(p1 => a.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
 
 /// No Tail-Forking (NTF) page 10:
+/// todo: This needs to be revised. The reproposal changes the proposal id of the proposal but proposes the same block.
 def ntf = 
   val a = s.msgHistory.fold(Set(), (s, x) => match x {
     | Vote(v) => s.setAdd(v)
@@ -826,6 +869,8 @@ action init_0 = all {
     activeTimeouts: validators.mapBy(v => Set()),
     committed_proposals: validators.mapBy(v => Set()),
     msgHistory: Set(),
+    timeoutHistory: Set(),
+    lastMsg: None,
   },
 }
 
@@ -856,6 +901,12 @@ action init = all {
             None,
             "v1"
           )
+
+    val ancestors = Map(
+      p1.proposal_id -> Set(p1.proposal_id),
+      p2.proposal_id -> Set(p1.proposal_id),
+      p3.proposal_id -> Set(p1.proposal_id, p2.proposal_id)
+    )
      
     // --- now override the environment ---
     s' = {
@@ -865,6 +916,7 @@ action init = all {
           curView            :2,
           ledger             : List(p1, p2),
           proposals          : Set(p1, p2, p3),
+          ancestors         : ancestors,
           highest_voted_view : 2,
           tip : Some({
             view         : 2,
@@ -883,6 +935,8 @@ action init = all {
       activeTimeouts:      validators.mapBy(_ => Set()),
       committed_proposals: validators.mapBy(_ => Set(p1, p2)),
       msgHistory:          Set(),
+      timeoutHistory:      Set(),
+      lastMsg:            None,
     },
   }
 
@@ -899,10 +953,11 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
     match x {
       | BroadcastProp(p) =>
           // Warning: This was added to provide a data availability layer for the proposals to avoid having missing proposals in the proposal handler. This is to be adressed in the future.
-          val s_with_prop = s.system.keys().fold(s.system, (sys_map, node) =>
+          val s_with_prop = s.system.keys().fold(s.system, (sys_map, node) => //TODO: refractor this to be more readable
             sys_map.set(node,
               { ... sys_map.get(node),
-                proposals : sys_map.get(node).proposals.setAdd(p)
+                proposals : sys_map.get(node).proposals.setAdd(p),
+                ancestors : sys_map.get(node).ancestors.put(p.proposal_id, sys_map.get(node).ancestors.getOrElse(p.parent_id(), Set()).setAdd(p.parent_id()))
               }
             )
          )
@@ -911,7 +966,7 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
             msgBuffer:   s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Prop(p))))
           }
       | BroadCastTimeout(t) =>
-          { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Timeout(t)))) } // update propBuffers
+          { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Timeout(t))))} // update propBuffers
       | Commit(p) =>
           { ... s, committed_proposals: s.committed_proposals.set(v, s.committed_proposals.get(v).setAdd(p)) }
       | EarlyConfirmation(p) =>
@@ -922,7 +977,9 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
           { ... s,  msgHistory: s.msgHistory.setAdd(Vote(am._2)),
                     msgBuffer: s.msgBuffer.setBy(am._1, msgs => msgs.setAdd(Vote(am._2)))}
       | StartTimeout(t) =>
-          { ... s, activeTimeouts: s.activeTimeouts.setBy(v, ato => Set(t))}
+          val ot = if (s.activeTimeouts.get(v).size() == 0) t else s.activeTimeouts.get(v).getOnlyElement() //ot = old timeout
+          val ft  = if (ot > t) ot else t //ft = fresher timeout
+          { ... s, activeTimeouts: s.activeTimeouts.setBy(v, ato => Set(ft))}
     }
   })
 
@@ -939,13 +996,14 @@ pure def apply_effect (env: Environment, v: Address, res: ConsensusResult): Envi
 //
 
 pure def receive_one_message (state: Environment, v: Address, msg: Message): Environment =
-  val consumed_msg_state = { ... state, msgBuffer: state.msgBuffer.set(v, state.msgBuffer.get(v).exclude(Set(msg))) }
+  val consumed_msg_state = { ... state, msgBuffer: state.msgBuffer.set(v, state.msgBuffer.get(v).exclude(Set(msg))),lastMsg: Some(msg)} //TODO: eliminate this line
   val res = consumed_msg_state.system.get(v).receive_message(msg)
   apply_effect(consumed_msg_state, v, res)
 
 
 pure def fire_one_timeout_event (state: Environment, v: Address, timeout: TimeoutEvent): Environment =
-  val consumed_timeout_state = { ... state, activeTimeouts: state.activeTimeouts.set(v, state.activeTimeouts.get(v).exclude(Set(timeout))) }
+  val consumed_timeout_state = { ... state, activeTimeouts: state.activeTimeouts.set(v, state.activeTimeouts.get(v).exclude(Set(timeout))), 
+                                 timeoutHistory: state.timeoutHistory.setAdd((v, timeout))} //TODO: eliminate this line
   val res = consumed_timeout_state.system.get(v).fire_timeout_event(timeout)
   apply_effect(consumed_timeout_state, v, res)
 
@@ -982,10 +1040,15 @@ action step_no_timeout =
   nondet v = oneOf(validators.filter(v => s.msgBuffer.get(v) != Set())) //pick a process that has a message available in its buffer
   act_receive_some_msg(v)
 
-action step_fine_grained =
-  nondet p = oneOf(1.to(5))
-  if (p ==1) step
-  else step_no_timeout
+action step_timeout =
+  nondet v = oneOf(validators.filter(v => s.activeTimeouts.get(v) != Set())) //pick a process that has a timeout available
+  act_some_timeout(v)
+
+action step_fine =
+  nondet p = oneOf(1.to(20))
+  if (p == 1) step
+  else if(validators.filter(v => s.msgBuffer.get(v) != Set()).size() > 0) step_no_timeout
+  else step
 
 //
 // Accelerated semantics (multiple process may receive multiple messages/timeouts in one action)
@@ -1024,12 +1087,12 @@ action accelerated_step = any {
 }  
 
 
-val safe = true
+val empty_buffer = not (s.msgBuffer.keys().filter(v => s.msgBuffer.get(v) == Set()).size() == validators.size())
 
 } // end of module monadbft
 
 
 
-module monadbfttest {
+module example {
   import monadbft(validators = Set("v1", "v2", "v3", "v4"), F = 1).*  
 } // end of module example
