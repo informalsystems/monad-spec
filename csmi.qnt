@@ -1,15 +1,8 @@
 // -*- mode: Bluespec; -*-
 
 /// Consensus State Machine Interface (CSMI)
-module CSMI {
+module CSMIBase {
   import basicSpells.* from "basicSpells"
-
-  // FIXME: I think this will not work with Apalache. However, I can't test this as this is resulting in a
-  // huge spec once we resolve type aliases as the types are too complex. This exceeds the gRPC limit which
-  // is already quite high.
-  // My alternative approach (sending processes as a param in init and step) is not working due to some
-  // weird effect error on step.
-  const processes: Set[p]
 
   type LocalState[process_id, other_fields] = { process_id: process_id | other_fields }
 
@@ -66,6 +59,29 @@ module CSMI {
     apply_effect(new, v, res.output)
   }
 
+  pure def chain(
+    res: ConsensusResult[LocalState[p, s], o],
+    f: (LocalState[p, s]) => ConsensusResult[LocalState[p, s], o]
+  ): ConsensusResult[LocalState[p, s], o] = {
+    pure val new_res = f(res.state)
+    { state: new_res.state, output: res.output.union(new_res.output) }
+  }
+
+  pure def no_output(s: LocalState[p, s]): ConsensusResult[LocalState[p, s], o] = {
+    { state: s, output: Set() }
+  }
+}
+
+module CSMIState {
+  import basicSpells.* from "basicSpells"
+  import CSMIBase.*
+
+  // FIXME: I think this will not work with Apalache. However, I can't test this as this is resulting in a
+  // huge spec once we resolve type aliases as the types are too complex. This exceeds the gRPC limit which
+  // is already quite high.
+  // My alternative approach (sending processes as a param in init and step) is not working due to some
+  // weird effect error on step.
+  const processes: Set[p]
   var s: Environment
 
   // This specification is event triggered, so a process step can only be triggered by a message or a timeout

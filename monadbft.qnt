@@ -2,7 +2,9 @@
 
 module monadbft {
   import basicSpells.* from "./basicSpells"
-  import CSMI(processes = validators) as CSMI from "csmi"
+  import CSMIBase as CSMI from "csmi"
+  import CSMIBase.chain from "csmi"
+  import CSMIState(processes = validators) as CSMI from "csmi"
 
   val BLOCK_PAYLOAD = "VALID_TRANSACTION" //TODO: this is just a placeholder
 
@@ -548,23 +550,18 @@ module monadbft {
 
 
   /// Alg 2 line 3 (Only for the leader)
-  pure def receive_vote_msg (s: LocalState, v: VoteMsg): ConsensusResult = {
-    if (s.is_leader()){
-      // Line 3
-      val res = handle_vote(v, s)
-      val qc = res._1
-      val s1 = res._2.state
-      val effects = res._2.output
+  pure def receive_vote_msg(s: LocalState, v: VoteMsg): ConsensusResult = {
+    if (not(s.is_leader())) CSMI::no_output(s) else
+    // Line 3
+    val res = handle_vote(v, s)
+    val qc = res._1
+    if (qc == None) res._2 else
 
-      if (qc != None) {
-        val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
-        val p = build_proposal(s1.curView, new_block, None, None, s1.process_id)
-        { state: s1, output: effects.setAdd(BroadcastProp(p))}
-      } else 
-        { state: s1, output: effects}
-
-    } else
-      { state: s, output: Set() }
+    res._2.chain(s => {
+      val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
+      val p = build_proposal(s.curView, new_block, None, None, s.process_id)
+      { state: s, output: Set(BroadcastProp(p)) }
+    })
   }
 
   /// Alg 2 line 49
