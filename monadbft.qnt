@@ -4,8 +4,7 @@ module monadbft {
   import basicSpells.* from "./basicSpells"
   import CSMIBase as CSMI from "csmi"
   import CSMIBase.chain from "csmi"
-  import CSMIBase.chain_producing_return from "csmi"
-  import CSMIBase.chain_consuming_return from "csmi"
+  import CSMIBase.chain_state from "csmi"
   import CSMIState(processes = validators) as CSMI from "csmi"
 
   val BLOCK_PAYLOAD = "VALID_TRANSACTION" //TODO: this is just a placeholder
@@ -61,9 +60,6 @@ module monadbft {
   type ConsensusResult = CSMI::ConsensusResult[LocalState, ConsensusOutput]
   type Environment = CSMI::Environment[Address, State, Message, TimeoutEventData, Bookkeeping]
   type TimeoutEvent = CSMI::TimeoutEvent[TimeoutEventData]
-  type ReturnWithConsensusResult[r] = CSMI::ReturnWithConsensusResult[r, Address, LocalState, ConsensusOutput]
-
-
 
   //
   // Data structures (page 8)
@@ -525,17 +521,20 @@ module monadbft {
     }
   }
 
+  pure def add_votes(s: LocalState, proposal_id: ProposalID, votes: Set[VoteMsg]): LocalState =
+    { ...s, votes: s.votes.put(proposal_id, votes) }
+
   /// Alg 4 line 25
-  pure def handle_vote(vote: VoteMsg, s: LocalState): ReturnWithConsensusResult[Option[QC]] = {
+  pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC], ConsensusResult) = {
     val v = vote.view
     val id = vote.proposal_id
     
-    if (v < s.curView) CSMI::create_return(None, CSMI::no_output(s)) else
+    if (v < s.curView) (None, CSMI::no_output(s)) else
 
     // Vote is new, let's accumulate it
     val acc_votes = s.votes.getOrElse(id, Set()).setAdd(vote)
 
-    CSMI::no_output({ ...s, votes: s.votes.put(id, acc_votes) }).chain_producing_return(s => {
+    s.add_votes(id, acc_votes).chain_state(s => {
       // Check if we have a quorum
       if (acc_votes.size() >= Q) {
         val qc = build_qc(acc_votes, s.process_id, state_hash(s))
@@ -543,7 +542,7 @@ module monadbft {
       } else {
         (None, CSMI::no_output(s))
       }
-    })
+    })//.wrap_result()
   }
 
   //
@@ -551,12 +550,15 @@ module monadbft {
   // Consensus for Validator i
   // 
 
-
   /// Alg 2 line 3 (Only for the leader)
   pure def receive_vote_msg(s: LocalState, v: VoteMsg): ConsensusResult = {
     if (not(s.is_leader())) CSMI::no_output(s) else
     // Line 3
-    handle_vote(v, s).chain_consuming_return((s, qc) => {
+    pure val r = handle_vote(v, s)
+    pure val qc = r._1
+    pure val res = r._2
+
+    res.chain(s => {
       if (qc == None) CSMI::no_output(s) else
 
       val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
