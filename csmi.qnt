@@ -23,7 +23,7 @@ module CSMI {
   type Environment[p, s, m, te, b] = {
     system: p -> LocalState[p, s],
     msgBuffer: p -> Set[m],
-    activeTimeouts: p -> Set[TimeoutEvent[te]],
+    activeTimeouts: p -> Option[TimeoutEvent[te]],
     bookkeeping: b
   }
 
@@ -40,9 +40,19 @@ module CSMI {
     { ...env, msgBuffer: env.msgBuffer.transformValues(v => v.setAdd(msg)) }
   }
 
-  pure def timeout(env: Environment[p, s, m, te, b], v: p, timeout: TimeoutEvent[te]): Environment[p, s, m, te, b] = {
+  pure def timeout(
+    env: Environment[p, s, m, te, b],
+    v: p,
+    timeout: TimeoutEvent[te],
+    should_replace: (TimeoutEvent[te], TimeoutEvent[te]) => bool
+  ): Environment[p, s, m, te, b] = {
     { ...env,
-      activeTimeouts: env.activeTimeouts.setBy(v, ts => ts.setAdd(timeout))
+      activeTimeouts: env.activeTimeouts.setBy(v, old_timeout => Some({
+        match old_timeout {
+          | None => timeout
+          | Some(ts) => if (should_replace(ts, timeout)) timeout else ts
+        }
+      }))
     }
   }
 
@@ -68,7 +78,7 @@ module CSMI {
     s' = {
       system: processes.mapBy(v => initialize_process(v)),
       msgBuffer: processes.mapBy(v => initial_messages),
-      activeTimeouts: processes.mapBy(v => Set()),
+      activeTimeouts: processes.mapBy(v => None),
       bookkeeping: initial_bookkeeping,
     }
   }
@@ -101,7 +111,7 @@ module CSMI {
   ): Environment[p, s, m, te, b] = {
     val consumed_timeout_env = {
       ...env,
-      activeTimeouts: env.activeTimeouts.setBy(v, ts => ts.exclude(Set(timeout)))
+      activeTimeouts: env.activeTimeouts.set(v, None)
     }
     val res = consumed_timeout_env.system.get(v).fire_timeout_event(timeout)
     update_state(consumed_timeout_env, v, res, apply_effect)
@@ -129,22 +139,14 @@ module CSMI {
 
   action fire_timeout(
     v: p,
-    timeout: TimeoutEvent[te],
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b]
-  ): bool = all {
-    s.activeTimeouts.get(v).contains(timeout),
-    s' = fire_one_timeout_event(s, v, timeout, fire_timeout_event, apply_effect)
-  }
-
-  action fire_some_timeout(
-    v: p,
-    fire_timeout_event: FireTimeoutEvent[p, s, te, o],
-    apply_effect: ApplyEffect[p, s, m, te, o, b]
-  ): bool = all {
-    s.activeTimeouts.get(v) != Set(),
-    nondet t = oneOf(s.activeTimeouts.get(v))
-    fire_timeout(v, t, fire_timeout_event, apply_effect)
+  ): bool = {
+     val timeout = s.activeTimeouts.get(v)
+     all {
+       timeout != None,
+       s' = fire_one_timeout_event(s, v, timeout.unwrap(), fire_timeout_event, apply_effect),
+     }
   }
 
   action step(
@@ -156,10 +158,10 @@ module CSMI {
     all {
       nondet timeout_frequency_control = 1.to(100).oneOf()
       timeout_frequency_control <= timeout_chance,
-      s.activeTimeouts.values().flatten() != Set(),
+      s.activeTimeouts.values().exists(t => t != None),
       // pick a process that has an active timeout
-      nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != Set()))
-      fire_some_timeout(v, fire_timeout_event, apply_effect)
+      nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != None))
+      fire_timeout(v, fire_timeout_event, apply_effect)
     },
     all {
       s.msgBuffer.values().flatten() != Set(),
@@ -203,15 +205,12 @@ module CSMI {
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b]
   ): bool = all {
-     nondet timeouts = processes.map(v =>
-       s.activeTimeouts.get(v).powerset().exclude(Set(Set())).map(t => (v, t))
-     ).flatten().powerset().oneOf()
-     val deliver = timeouts.setToMap()
-     s' = deliver.keys().fold(s, (s, v) =>
-       deliver.get(v).fold(s, (s2, timeout) =>
-         fire_one_timeout_event(s2, v, timeout, fire_timeout_event, apply_effect)
-       )
-     )
+     nondet processes_to_timeout = processes.filter(v => s.activeTimeouts.get(v) != None)
+       .powerset().exclude(Set()).oneOf()
+     s' = processes_to_timeout.fold(s, (s, v) => {
+       val timeout = s.activeTimeouts.get(v)
+       fire_one_timeout_event(s, v, timeout.unwrap(), fire_timeout_event, apply_effect)
+     })
   }
 
   action step_accelerated(
@@ -223,10 +222,10 @@ module CSMI {
     all {
       nondet timeout_frequency_control = 1.to(100).oneOf()
       timeout_frequency_control <= timeout_chance,
-      s.activeTimeouts.values().flatten() != Set(),
+      s.activeTimeouts.values().exists(t => t != None),
       // pick a process that has an active timeout
-      nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != Set()))
-      fire_some_timeout(v, fire_timeout_event, apply_effect)
+      nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != None))
+      fire_timeout(v, fire_timeout_event, apply_effect)
     },
     all {
       s.msgBuffer.values().flatten() != Set(),

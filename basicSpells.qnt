@@ -358,6 +358,12 @@ module basicSpells {
     }
   }
 
+  pure def filterMap(s: Set[a], f: (a) => Option[b]): Set[b] = {
+    s.fold(Set(), (acc, e) => {
+      match f(e) {
+        | Some(x) => acc.union(Set(x))
+        | None => acc
+      }
+    })
+  }
 }
-
-

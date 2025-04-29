@@ -836,6 +836,10 @@ module monadbft {
     else
       { state: state, output: Set() }
 
+  pure def should_replace_timeout(old: TimeoutEvent, new: TimeoutEvent): bool =
+    // We want the freshest timeout to be kept
+    new > old
+
   pure def apply_effect(env: Environment, v: Address, outputs: Set[ConsensusOutput]): Environment =
     outputs.fold(env, (e, x) => {
       match x {
@@ -873,9 +877,7 @@ module monadbft {
 
             CSMI::broadcast(updated_env, Vote(am._2))
         | StartTimeout(t) =>
-          val ot = if (env.activeTimeouts.get(v).size() == 0) t else env.activeTimeouts.get(v).getOnlyElement() //ot = old timeout, we should have only one active timeout per node
-          val ft  = if (ot > t) ot else t //ft = fresher timeout
-          CSMI::timeout(e, v, ft)
+            CSMI::timeout(e, v, t, should_replace_timeout)
       }
     })
 
