@@ -200,7 +200,7 @@ module CSMI {
     if (timeout_frequency_control <= timeout_chance and s.activeTimeouts.values().flatten() != Set()) {
       receive_timeout_accelerated(fire_timeout_event, apply_effect)
     } else {
-      receive_msg_accelerated(receive_message, apply_effect),
+      receive_msg_accelerated(receive_message, apply_effect)
     }
   }
 }
