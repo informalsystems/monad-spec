@@ -152,13 +152,17 @@ module CSMI {
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b],
     timeout_chance: int // between 0 and 100
-  ): bool = {
-    nondet timeout_frequency_control = 1.to(100).oneOf()
-    if (timeout_frequency_control <= timeout_chance and s.activeTimeouts.values().flatten() != Set()) {
+  ): bool = any {
+    all {
+      nondet timeout_frequency_control = 1.to(100).oneOf()
+      timeout_frequency_control <= timeout_chance,
+      s.activeTimeouts.values().flatten() != Set(),
       // pick a process that has an active timeout
       nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != Set()))
       fire_some_timeout(v, fire_timeout_event, apply_effect)
-    } else {
+    },
+    all {
+      s.msgBuffer.values().flatten() != Set(),
       // pick a process that has a message available in its buffer
       nondet v = oneOf(processes.filter(v => s.msgBuffer.get(v) != Set()))
       receive_some_msg(v, receive_message, apply_effect)
@@ -216,11 +220,19 @@ module CSMI {
     apply_effect: ApplyEffect[p, s, m, te, o, b],
     timeout_chance: int // between 0 and 100
   ): bool = any {
-    nondet timeout_frequency_control = 1.to(100).oneOf()
-    if (timeout_frequency_control <= timeout_chance and s.activeTimeouts.values().flatten() != Set()) {
-      receive_timeout_accelerated(fire_timeout_event, apply_effect)
-    } else {
-      receive_msg_accelerated(receive_message, apply_effect)
+    all {
+      nondet timeout_frequency_control = 1.to(100).oneOf()
+      timeout_frequency_control <= timeout_chance,
+      s.activeTimeouts.values().flatten() != Set(),
+      // pick a process that has an active timeout
+      nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != Set()))
+      fire_some_timeout(v, fire_timeout_event, apply_effect)
+    },
+    all {
+      s.msgBuffer.values().flatten() != Set(),
+      // pick a process that has a message available in its buffer
+      nondet v = oneOf(processes.filter(v => s.msgBuffer.get(v) != Set()))
+      receive_some_msg(v, receive_message, apply_effect)
     }
   }
 }
