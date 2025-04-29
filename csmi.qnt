@@ -29,11 +29,31 @@ module CSMI {
 
   type ReceiveMessage[p, s, m, o] = (LocalState[p, s], m) => ConsensusResult[LocalState[p, s], o]
   type ApplyEffect[p, s, m, te, o, b] =
-    (Environment[p, s, m, te, b], p, ConsensusResult[LocalState[p, s], o]) => Environment[p, s, m, te, b]
+    (Environment[p, s, m, te, b], p, Set[o]) => Environment[p, s, m, te, b]
   type FireTimeoutEvent[p, s, te, o] = (LocalState[p, s], TimeoutEvent[te]) => ConsensusResult[LocalState[p, s], o]
 
   pure def bookkeep(env: Environment[p, s, m, te, b], f: b => b): Environment[p, s, m, te, b] = {
     { ...env, bookkeeping: f(env.bookkeeping) }
+  }
+
+  pure def broadcast(env: Environment[p, s, m, te, b], msg: m): Environment[p, s, m, te, b] = {
+    { ...env, msgBuffer: env.msgBuffer.transformValues(v => v.setAdd(msg)) }
+  }
+
+  pure def timeout(env: Environment[p, s, m, te, b], v: p, timeout: TimeoutEvent[te]): Environment[p, s, m, te, b] = {
+    { ...env,
+      activeTimeouts: env.activeTimeouts.setBy(v, ts => ts.setAdd(timeout))
+    }
+  }
+
+  pure def update_state(
+    env: Environment[p, s, m, te, b],
+    v: p,
+    res: ConsensusResult[LocalState[p, s], o],
+    apply_effect: ApplyEffect[p, s, m, te, o, b]
+  ): Environment[p, s, m, te, b] = {
+    val new = { ... env, system: env.system.set(v, res.state) }
+    apply_effect(new, v, res.output)
   }
 
   var s: Environment
@@ -58,33 +78,33 @@ module CSMI {
   //
 
   pure def receive_one_message(
-    state: Environment[p, s, m, te, b],
+    env: Environment[p, s, m, te, b],
     v: p,
     msg: m,
     receive_message: ReceiveMessage[p, s, m, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b],
   ): Environment[p, s, m, te, b] = {
-    val consumed_msg_state = {
-      ...state,
-      msgBuffer: state.msgBuffer.setBy(v, b => b.exclude(Set(msg)))
+    val consumed_msg_env = {
+      ...env,
+      msgBuffer: env.msgBuffer.setBy(v, b => b.exclude(Set(msg)))
     }
-    val res = state.system.get(v).receive_message(msg)
-    apply_effect(state, v, res)
+    val res = env.system.get(v).receive_message(msg)
+    update_state(consumed_msg_env, v, res, apply_effect)
   }
 
   pure def fire_one_timeout_event(
-    state: Environment[p, s, m, te, b],
+    env: Environment[p, s, m, te, b],
     v: p,
     timeout: TimeoutEvent[te],
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b]
   ): Environment[p, s, m, te, b] = {
-    val consumed_timeout_state = {
-      ...state,
-      activeTimeouts: state.activeTimeouts.setBy(v, ts => ts.exclude(Set(timeout)))
+    val consumed_timeout_env = {
+      ...env,
+      activeTimeouts: env.activeTimeouts.setBy(v, ts => ts.exclude(Set(timeout)))
     }
-    val res = consumed_timeout_state.system.get(v).fire_timeout_event(timeout)
-    apply_effect(consumed_timeout_state, v, res)
+    val res = consumed_timeout_env.system.get(v).fire_timeout_event(timeout)
+    update_state(consumed_timeout_env, v, res, apply_effect)
   }
 
   action receive_msg(
@@ -107,7 +127,7 @@ module CSMI {
     receive_msg(v, msg, receive_message, apply_effect)
   }
 
-  action timeout(
+  action fire_timeout(
     v: p,
     timeout: TimeoutEvent[te],
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
@@ -117,14 +137,14 @@ module CSMI {
     s' = fire_one_timeout_event(s, v, timeout, fire_timeout_event, apply_effect)
   }
 
-  action some_timeout(
+  action fire_some_timeout(
     v: p,
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b]
   ): bool = all {
     s.activeTimeouts.get(v) != Set(),
     nondet t = oneOf(s.activeTimeouts.get(v))
-    timeout(v, t, fire_timeout_event, apply_effect)
+    fire_timeout(v, t, fire_timeout_event, apply_effect)
   }
 
   action step(
@@ -132,13 +152,17 @@ module CSMI {
     fire_timeout_event: FireTimeoutEvent[p, s, te, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b],
     timeout_chance: int // between 0 and 100
-  ): bool = {
-    nondet timeout_frequency_control = 1.to(100).oneOf()
-    if (timeout_frequency_control <= timeout_chance and s.activeTimeouts.values().flatten() != Set()) {
+  ): bool = any {
+    all {
+      nondet timeout_frequency_control = 1.to(100).oneOf()
+      timeout_frequency_control <= timeout_chance,
+      s.activeTimeouts.values().flatten() != Set(),
       // pick a process that has an active timeout
       nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != Set()))
-      some_timeout(v, fire_timeout_event, apply_effect)
-    } else {
+      fire_some_timeout(v, fire_timeout_event, apply_effect)
+    },
+    all {
+      s.msgBuffer.values().flatten() != Set(),
       // pick a process that has a message available in its buffer
       nondet v = oneOf(processes.filter(v => s.msgBuffer.get(v) != Set()))
       receive_some_msg(v, receive_message, apply_effect)
@@ -196,11 +220,19 @@ module CSMI {
     apply_effect: ApplyEffect[p, s, m, te, o, b],
     timeout_chance: int // between 0 and 100
   ): bool = any {
-    nondet timeout_frequency_control = 1.to(100).oneOf()
-    if (timeout_frequency_control <= timeout_chance and s.activeTimeouts.values().flatten() != Set()) {
-      receive_timeout_accelerated(fire_timeout_event, apply_effect)
-    } else {
-      receive_msg_accelerated(receive_message, apply_effect)
+    all {
+      nondet timeout_frequency_control = 1.to(100).oneOf()
+      timeout_frequency_control <= timeout_chance,
+      s.activeTimeouts.values().flatten() != Set(),
+      // pick a process that has an active timeout
+      nondet v = oneOf(processes.filter(v => s.activeTimeouts.get(v) != Set()))
+      fire_some_timeout(v, fire_timeout_event, apply_effect)
+    },
+    all {
+      s.msgBuffer.values().flatten() != Set(),
+      // pick a process that has a message available in its buffer
+      nondet v = oneOf(processes.filter(v => s.msgBuffer.get(v) != Set()))
+      receive_some_msg(v, receive_message, apply_effect)
     }
   }
 }

@@ -203,7 +203,7 @@ module monadbft {
   /// Check if the node is the leader of the current view
   pure def is_leader(s: LocalState): bool =
     // TODO: this is just a placeholder
-    s.address == "v1" 
+    s.process_id == "v1"
 
   /// Check if qc1 extends qc2
   pure def extend (qc1: QC, qc2: QC, ancestors: ProposalID -> Set[ProposalID]): bool =
@@ -506,7 +506,7 @@ module monadbft {
       val s3 = {...s2, timeouts: s2.timeouts.put(v, acc_timeouts)}
       // Check if we have a quorum
       if (acc_timeouts.size() >= Q) {
-        val tc = build_tc(acc_timeouts, s3.address)
+        val tc = build_tc(acc_timeouts, s3.process_id)
         val co3 = increment_view(tc.view, s3)
         (Some(tc), {state: co3.state, output: co3.output.union(effects)}, false) //TODO: do we need to carry the effects of the previous increment_view here
       }
@@ -533,7 +533,7 @@ module monadbft {
       val s1 = {...s, votes: s.votes.put(id, acc_votes)}
       // Check if we have a quorum
       if (acc_votes.size() >= Q) {
-        val qc = build_qc(acc_votes, s.address, state_hash(s1))
+        val qc = build_qc(acc_votes, s.process_id, state_hash(s1))
         (Some(qc), increment_view(qc.view, s1))
       }
       else (None, {state: s1, output: Set()})
@@ -558,7 +558,7 @@ module monadbft {
 
       if (qc != None) {
         val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
-        val p = build_proposal(s1.curView, new_block, None, None, s1.address)
+        val p = build_proposal(s1.curView, new_block, None, None, s1.process_id)
         { state: s1, output: effects.setAdd(BroadcastProp(p))}
       } else 
         { state: s1, output: effects}
@@ -580,13 +580,13 @@ module monadbft {
         view: s.curView,
         high_tip: None,
         tips: Set(),
-        sigma: s.address
+        sigma: s.process_id
       }
       val timeout_msg = {
         view: s.curView,
         tip: s.tip.unwrap(), //TODO: check if this is safe, it is not specified in the paper, made me think it is an option (Line 50)
         tc: tc_aux,
-        sigma: s.address
+        sigma: s.process_id
       }
       { state: s1, output: Set(BroadCastTimeout(timeout_msg))}
     }
@@ -612,13 +612,13 @@ module monadbft {
         if (block_present(s2, high_tip.block_header)) { //if block and its payload (block.payload) for high tip is present
           // Line 17
           val block = get_present_block(s2, high_tip.block_header)
-          val p = build_proposal(s2.curView, block, tc, None, s2.address)
+          val p = build_proposal(s2.curView, block, tc, None, s2.process_id)
           { state: s2, output: effects.setAdd(BroadcastProp(p))}
         } else
           // Line 18-19-20 recoveringcurView ← true; SendRecoveryRequest(curView, high tip, tc);
           // TODO: For the moment this is replaced by fetching the block from the DA variable for debugging purposes
           val block = get_present_block(s2, high_tip.block_header)
-          val p = build_proposal(s2.curView, block, tc, None, s2.address)
+          val p = build_proposal(s2.curView, block, tc, None, s2.process_id)
           { state: s2, output: effects.setAdd(BroadcastProp(p))}
         
     }else
@@ -680,7 +680,7 @@ module monadbft {
         seq: p.block.seq,
         proposal_id: p.proposal_id,
         state_hash: state_hash(s3),
-        sigma: s3.address,
+        sigma: s3.process_id,
       }
       val send_vote = Set(SendVoteToNextLeader(("v1", vote_msg))) //TODO: send to next leader
       { output: commit.union(early_confirmation).union(send_vote).union(timers), state: s3 }
@@ -836,48 +836,46 @@ module monadbft {
     else
       { state: state, output: Set() }
 
-  pure def apply_effect(env: Environment, v: Address, res: ConsensusResult): Environment =
-    val new = { ... env, system: env.system.set(v, res.state) }
-    res.output.fold(new, (s, x) => {
+  pure def apply_effect(env: Environment, v: Address, outputs: Set[ConsensusOutput]): Environment =
+    outputs.fold(env, (e, x) => {
       match x {
         | BroadcastProp(p) =>
-          // Warning: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
-          // and remove the need for a block recovery mechanism.
-          // TODO: refractor this when we have a block recovery mechanism.
-          // TODO: refractor this to be more readable.
-          // TODO: do we need a mechanism to filter out the "bad" proposals.
-          val s_da = s.system.keys().fold(s.system, (p_map, node) => // s_da = system with "data availability" 
-            p_map.set(node,
-              { ... p_map.get(node),
-                proposals : p_map.get(node).proposals.setAdd(p),
-                ancestors : p_map.get(node).ancestors.put(p.proposal_id, p_map.get(node).ancestors.getOrElse(p.parent_id(), Set()).setAdd(p.parent_id()))
-              }
+            // Warning: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
+            // and remove the need for a block recovery mechanism.
+            // TODO: refractor this when we have a block recovery mechanism.
+            // TODO: refractor this to be more readable.
+            // TODO: do we need a mechanism to filter out the "bad" proposals.
+            val s_da = env.system.keys().fold(env.system, (p_map, node) => // s_da = system with "data availability"
+              p_map.set(node,
+                { ... p_map.get(node),
+                  proposals : p_map.get(node).proposals.setAdd(p),
+                  ancestors : p_map.get(node).ancestors.put(p.proposal_id, p_map.get(node).ancestors.getOrElse(p.parent_id(), Set()).setAdd(p.parent_id()))
+                }
+              )
             )
-          )
-          { ... s,
-            system:      s_da,
-            msgBuffer:   s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Prop(p))))
-          }
+            val env_with_da = { ...env, system: s_da }
+            CSMI::broadcast(env_with_da, Prop(p))
         | BroadCastTimeout(t) =>
-            { ... s, msgBuffer: s.msgBuffer.keys().mapBy(x => s.msgBuffer.get(x).union(Set(Timeout(t)))) }
+            CSMI::broadcast(e, Timeout(t))
         | Commit(p) =>
-            CSMI::bookkeep(s, b => {
+            CSMI::bookkeep(e, b => {
               ...b,
               committed_proposals: b.committed_proposals.setBy(v, ps => ps.setAdd(p))
             })
         | EarlyConfirmation(p) =>
-            s
+            e
         | Confirmation(p) =>
-            s
+            e
         | SendVoteToNextLeader(am) =>
-            pure val updated_env = CSMI::bookkeep(s, b => {
+            pure val updated_env = CSMI::bookkeep(e, b => {
               ...b, msgHistory: b.msgHistory.setAdd(Vote(am._2)),
             })
-            { ...updated_env, msgBuffer: s.msgBuffer.setBy(am._1, msgs => msgs.setAdd(Vote(am._2))) }
+
+            CSMI::broadcast(updated_env, Vote(am._2))
         | StartTimeout(t) =>
-          val ot = if (s.activeTimeouts.get(v).size() == 0) t else s.activeTimeouts.get(v).getOnlyElement() //ot = old timeout, we should have only one active timeout per node
+          val ot = if (env.activeTimeouts.get(v).size() == 0) t else env.activeTimeouts.get(v).getOnlyElement() //ot = old timeout, we should have only one active timeout per node
           val ft  = if (ot > t) ot else t //ft = fresher timeout
-          { ... s, activeTimeouts: s.activeTimeouts.setBy(v, ato => Set(ft))}
+          CSMI::timeout(e, v, ft)
       }
     })
 
