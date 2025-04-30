@@ -78,7 +78,6 @@ module monadbft {
     block_header: BlockHeader,
     sigma: Signature,
     nec: Option[NEC],
-    tip_id: int, // added to avoid recursive data types
   }
 
   /// ⟨view, seq, proposal id, state hash, σ⟩ (page 8)
@@ -417,7 +416,6 @@ module monadbft {
           block_header: p.block.header_from_block(),
           sigma: p.sigma,
           nec: p.nec,
-          tip_id: 0, // TODO: Update this 
         }
       Some(p_tip)
     else
@@ -794,7 +792,6 @@ module monadbft {
           block_header : header_from_block(b2),
           sigma        : process_id,
           nec          : None,
-          tip_id       : 0
         })
     }
   }
