@@ -1,5 +1,13 @@
 // -*- mode: Bluespec; -*-
 
+/**
+ * Specification of MonadBFT Consensus [1]
+ *
+ * [1]: https://arxiv.org/pdf/2502.20692
+ *
+ * Yassine Boukhari, Josef Widder and Gabriela Moreira,
+ * Informal Systems, 2025
+ */
 module monadbft {
   import basicSpells.* from "./basicSpells"
   import CSMIBase as CSMI from "csmi"
@@ -7,27 +15,36 @@ module monadbft {
   import CSMIBase.chain_state from "csmi"
   import CSMIState(processes = validators) as CSMI from "csmi"
 
-  val BLOCK_PAYLOAD = "VALID_TRANSACTION" //TODO: this is just a placeholder
+  // TODO: this is just a placeholder
+  pure val BLOCK_PAYLOAD = "VALID_TRANSACTION"
 
   type Address = str
 
   type State = {
     // Variables from Algorithm 2
-    high_tip: Option[Tip], //NB: sure this is an option
-    tip: Option[Tip], //NB: sure this is an option
+    high_tip: Option[Tip],
+    tip: Option[Tip],
     last_tc: Option[TC],
     curView: int,
     ledger: Ledger,
     highest_voted_view: int,
+
     // Variables from Algorithm 4
-    votes: ProposalID -> Set[VoteMsg], // not listed on top but used in Alg 4 line 30
-    timeouts : int -> Set[TimeoutMsg], // mapping from view number to set of timeout messages (Alg 4 line 17)
-    broadcast_timeout: int -> bool, // mapping from view number to boolean to ensure only one timeout is broadcasted (Alg 4 line 21/22)
-    
+
+    // Not listed on top but used in Alg 4 line 30
+    votes: ProposalID -> Set[VoteMsg],
+    // Mapping from view number to set of timeout messages (Alg 4 line 17)
+    timeouts: int -> Set[TimeoutMsg],
+    // Set of view numbers for which a timeout was broadcasted (Alg 4 line 21/22)
+    broadcasted_timeouts: Set[int],
+
     // Extra variables to provide data availability and abstract some of the logic.
-    proposals: Set[Proposal], // contains all the proposals that circulated in the network to avoid network requests if block is missing.
-    // The proposals variable should be removed/replaced when the block recovery is implemented.
-    ancestors: ProposalID -> Set[ProposalID], // mapping from proposal id to its ancestors, serves as an accumulator to avoid recursion for QC tree checks.   
+
+    // All the proposals that circulated in the network to avoid network requests if block is missing.
+    // This field should be removed/replaced when the block recovery is implemented.
+    proposals: Set[Proposal],
+    // Mapping from proposal id to its ancestors, serves as an accumulator to avoid recursion for QC tree checks.
+    ancestors: ProposalID -> Set[ProposalID],
   }
 
   type Message =
@@ -67,8 +84,11 @@ module monadbft {
 
   type Ledger = List[Proposal]
   type ProposalID = { seq: int, view: int, byzantine: int }
-  type Signature = Address // let's just add the sender address as a signature
-  type StateHash = List[ProposalID] // We don't model hashes explicitly, but by the assumption on collision-free hash functions, we can use this model to test for equality.
+  // The signature is symbolic, we represent it with the sender address
+  type Signature = Address
+  // We don't model hashes explicitly, but under the assumption of collision-free hash functions,
+  // we can use this model to test for equality.
+  type StateHash = List[ProposalID]
 
 
   /// ⟨view, proposal id, block header, σ, nec⟩ (page 8)
@@ -100,7 +120,9 @@ module monadbft {
   type TimeoutMsg = {
     view: int,
     tip: Tip,
-    tc: TCAux,  //timeout certificate use tc.view. Needed to avoid cyclic data type. TODO: Maybe this should be an option
+    // Timeout certificate use tc.view. Needed to avoid cyclic data type.
+    // TODO: Maybe this should be an option
+    tc: TCAux,
     sigma: Signature,
   }
 
@@ -116,7 +138,6 @@ module monadbft {
 
   /// TC = ⟨view, tips, high_tip, Σ⟩ (page 9)
   type TC = {
-    //id: int,          // TODO This might not be needed
     view: int,
     high_tip: Option[Tip],
     tips: Set[Tip],
@@ -140,7 +161,8 @@ module monadbft {
     c: Set[NoEndorsementMsg]
   }
 
-  /// //We don't model hashes explicitly, but by the assumption on collision-free hash functions, we can use this model to test for equality.
+  /// We don't model hashes explicitly, but under the assumption of collision-free hash functions,
+  /// we can use this model to test for equality.
   type BlockHash = {
     seq: int,
     payload_hash: str,
@@ -182,10 +204,12 @@ module monadbft {
     { ...s, timeouts: s.timeouts.put(view, timeouts) }
   }
 
-  pure def add_broadcast_timeout(s: LocalState, view: int): LocalState = {
-    // TODO: a set would be a better data structure for this
-    // Also, we should initialize those sets with the validators and use `set` instead of `put` everywhere
-    { ...s, broadcast_timeout: s.broadcast_timeout.put(view, true) }
+  pure def mark_broadcasted_timeout(s: LocalState, view: int): LocalState = {
+    { ...s, broadcasted_timeouts: s.broadcasted_timeouts.setAdd(view) }
+  }
+
+  pure def already_broadcasted_timeout(s: LocalState, view: int): bool = {
+    s.broadcasted_timeouts.contains(view)
   }
 
   pure def add_votes(s: LocalState, proposal_id: ProposalID, votes: Set[VoteMsg]): LocalState =
@@ -211,7 +235,7 @@ module monadbft {
 
   /// Cryptographic hash to the post‐execution state
   /// Modeled here as the ordered list of executed proposal ids
-  pure def state_hash(s: LocalState) : StateHash = {
+  pure def state_hash(s: LocalState): StateHash = {
     s.ledger.foldl(List(), (acc, p) => acc.append(p.proposal_id))
   }
 
@@ -221,19 +245,18 @@ module monadbft {
   
   /// Check if the node(self) is the leader of the current view
   pure def i_am_leader(s: LocalState): bool =
-    s.process_id == leader_from_view(s.curView)
+    leader_from_view(s.curView) == s.process_id
 
   pure def leader_from_view(view: int): Address = {
     leaders[view % leaders.length()]
   }
-
 
   /// Check if qc1 extends qc2
   pure def extend(qc1: QC, qc2: QC, ancestors: ProposalID -> Set[ProposalID]): bool =
     ancestors.getOrElse(qc1.proposal_id, Set()).contains(qc2.proposal_id)
 
   /// Check if two proposals are conflicting
-  pure def conflicting_props (p1: Proposal, p2: Proposal, ancestors: ProposalID -> Set[ProposalID]): bool =
+  pure def conflicting_props(p1: Proposal, p2: Proposal, ancestors: ProposalID -> Set[ProposalID]): bool =
     and {
       not(extend(p1.block.qc, p2.block.qc, ancestors)),
       not(extend(p2.block.qc, p1.block.qc, ancestors)),
@@ -243,17 +266,6 @@ module monadbft {
   /// This function retruns a set of Tips. 
   pure def get_tips_from_timeouts(msgs: Set[TimeoutMsg]): Set[Tip]= {
     msgs.fold(Set(), (acc, msg) => acc.setAdd(msg.tip))
-  }
-
-  /// Find the tip with the highest view out of a set of tip
-  pure def highest_tip(tips: Set[Tip]): Tip = {
-    // argmax (t∈tips) t.view
-    val init = tips.fold(List(), (acc, t) => acc.append(t))[0] //TODO: this is just a placeholder, refractor after debugging.
-    val max_tip = tips.fold(init, (acc, t) => {
-      if (t.view > acc.view) t
-      else acc
-    })
-    max_tip
   }
 
   /// Extract the block header out of a block
@@ -268,7 +280,8 @@ module monadbft {
 
   /// Build a TC out of a set of timeout messages
   pure def build_tc(timeouts: Set[TimeoutMsg], addr: Address): TC = {
-    val view = timeouts.map(t => t.view).getOnlyElement() //will throw an error if we have different views
+    // getOnlyElement will throw an error if we have different views
+    val view = timeouts.map(t => t.view).getOnlyElement()
     val high_tip = find_high_tip_from_messages(timeouts) 
     {
       c: timeouts,
@@ -281,9 +294,10 @@ module monadbft {
 
   /// Build a QC out of a set of votes
   pure def build_qc(votes: Set[VoteMsg], addr: Address, state_hash: StateHash): QC = {
-    val seq = votes.map(v => v.seq).getOnlyElement() //will throw an error if we have different seqs
-    val view = votes.map(v => v.view).getOnlyElement() //will throw an error if we have different views
-    val id = {seq: seq, view: view, byzantine: 0}
+    // getOnlyElement will throw an error if we have different seqs/views
+    val seq = votes.map(v => v.seq).getOnlyElement()
+    val view = votes.map(v => v.view).getOnlyElement()
+    val id = { seq: seq, view: view, byzantine: 0 }
     {
       c: votes,
       view: view,
@@ -296,41 +310,35 @@ module monadbft {
 
   /// Get a proposal based on the proposal id
   pure def get_proposal(s: LocalState, id: ProposalID): Proposal =
-    s.proposals.filter(p => p.proposal_id == id).getOnlyElement()
+    s.proposals.find(p => p.proposal_id == id).unwrap()
 
   /// Execute the proposal
   /// TODO: This is fine as it is, but we should think if we can do better here.
   pure def execute_block(ledger: Ledger, p: Proposal): Ledger = {
-    append(ledger, p)
+    ledger.append(p)
   }
 
   /// Check if a proposal conflicts with the ledger
   pure def proposal_conflicts(ledger: Ledger, p: Proposal, ancestors: ProposalID -> Set[ProposalID]): bool = {
-    ledger.select(l => conflicting_props(l, p, ancestors)).length() > 0
+    ledger.toSet().exists(l => conflicting_props(l, p, ancestors))
   }
-
 
   /// Revert the ledger back to the latest ancestor of p that is in the ledger.
   /// `ancestors` maps each proposalID to the full set of its ancestor‐IDs.
-  pure def revert_ledger(
-      ledger:   Ledger,
-      p:        Proposal,
-      ancestors: ProposalID -> Set[ProposalID]
-    ): Ledger = {
-    
+  pure def revert_ledger(ledger: Ledger, p: Proposal, ancestors: ProposalID -> Set[ProposalID]): Ledger = {
     // 1) Look up the set of all ancestor IDs for p
-    val ancIds = ancestors.getOrElse(p.proposal_id, Set())
+    pure val ancIds = ancestors.getOrElse(p.proposal_id, Set())
 
     // 2) Walk the ledger and remember the last index where we saw one of those IDs
-    //    foldl((nextIndex, lastMatch), ( (idx, foundIdx), elem )) =>
+    //    foldl((nextIndex, lastMatch), ((idx, foundIdx), elem )) =>
     //      if elem.proposal_id ∈ ancIds then (idx+1, idx) else (idx+1, foundIdx)
-    val result = ledger.foldl((0, -1), (acc, elem) => {
-      val idx = acc._1
-      val lastMatch = acc._2
-      if (ancIds.contains(elem.proposal_id))
+    pure val result = ledger.foldl((0, -1), (acc, elem) => {
+      pure val idx = acc._1
+      pure val foundIdx = acc._2
+      if (elem.proposal_id.in(ancIds))
         (idx + 1, idx)
       else
-        (idx + 1, lastMatch)
+        (idx + 1, foundIdx)
     })
 
     val lastIdx = result._2
@@ -344,15 +352,14 @@ module monadbft {
     }
   }
 
-
   /// Check if a block was alread received
   pure def block_present(s: LocalState, bh: BlockHeader): bool = {
-    s.proposals.filter(p => p.block.header_from_block() == bh).size() > 0
+    s.proposals.exists(p => p.block.header_from_block() == bh)
   }
 
   /// Fetch the block from the local state
   pure def get_present_block(s: LocalState, bh: BlockHeader): Block = {
-    s.proposals.filter(p => p.block.header_from_block() == bh).map(p => p.block).getOnlyElement()
+    s.proposals.find(p => p.block.header_from_block() == bh).unwrap().block
   }
 
   //
@@ -363,20 +370,24 @@ module monadbft {
   /// Alg 1, line 1
   /// Form a block out of a QC and a payload
   pure def build_block(qc: QC, payload: str): Block =
-  {
-    seq: qc.seq + 1,
-    payload: payload,
-    payload_hash: hash(payload),
-    qc: qc,
-    block_hash: hash_block(qc.seq + 1, hash(payload), qc),
-  }
-
-
+    {
+      seq: qc.seq + 1,
+      payload: payload,
+      payload_hash: hash(payload),
+      qc: qc,
+      block_hash: hash_block(qc.seq + 1, hash(payload), qc),
+    }
 
   /// Algorithm 1, page 13 (line 6)
   /// Form a proposal out of a block and a set of certificates
-  pure def build_proposal(view: int, block: Block, tc: Option[TC], nec: Option[NEC], addr: Address): Proposal = {
-    val id = {seq: block.seq, view: view, byzantine: 0}
+  pure def build_proposal(
+    view: int,
+    block: Block,
+    tc: Option[TC],
+    nec: Option[NEC],
+    addr: Address
+  ): Proposal = {
+    val id = { seq: block.seq, view: view, byzantine: 0 }
     {
       view: view,
       proposal_id: id,
@@ -393,47 +404,40 @@ module monadbft {
   /// In recovery after a timeout, it only accepts either the reproposal of the highest‐tip block or, 
   /// if that block couldn’t be recovered, a new block justified by a No‑Endorsement Certificate.
   pure def safety_check(p: Proposal): bool = {
-
     if (p.block.seq != p.block.qc.seq + 1) // Warning: typo in the paper (line 11)
       false
     else if (p.view == p.block.qc.view + 1)
       true
-    else if (p.tc != None and p.view == p.tc.unwrap().view + 1){
-      val p_tc = p.tc.unwrap()
-      if (
-        or {p.block.qc != p_tc.high_tip.unwrap().block_header.qc, // The unwrap will throw an error if the option is None, but it should not be
-          p_tc.high_tip != find_high_tip(p_tc)}
-        )
+    else if (p.tc != None and p.view == p.tc.unwrap().view + 1)
+      pure val p_tc = p.tc.unwrap()
+      if (p.block.qc != p_tc.high_tip.unwrap().block_header.qc
+            or p_tc.high_tip != find_high_tip_from_tc(p_tc))
         false
       else if (p.nec != None)
-      and {
-          p.nec.unwrap().view == p.view,
-          p.nec.unwrap().highqc_view == p.block.qc.view,
-        }
-      else p.block.block_hash == p_tc.high_tip.unwrap().block_header.block_hash // The unwrap will throw an error if the option is None, but it should not be
-    }
-    else false
+        p.nec.unwrap().view == p.view and p.nec.unwrap().highqc_view == p.block.qc.view
+      else
+        p.block.block_hash == p_tc.high_tip.unwrap().block_header.block_hash
+    else
+      false
   }
 
   /// Alg 1 line 22
   pure def update_tip(p: Proposal): Option[Tip] = {
     if (p.view == p.block.qc.view + 1 or p.nec != None)
-      val p_tip = {
-          view: p.view,
-          proposal_id: p.proposal_id,
-          block_header: p.block.header_from_block(),
-          sigma: p.sigma,
-          nec: p.nec,
-        }
-      Some(p_tip)
+      Some({
+        view: p.view,
+        proposal_id: p.proposal_id,
+        block_header: p.block.header_from_block(),
+        sigma: p.sigma,
+        nec: p.nec,
+      })
     else
-      find_high_tip(p.tc.unwrap()) // Warning: why there is no check for none TC 
+      find_high_tip_from_tc(p.tc.unwrap()) // Warning: why there is no check for none TC
   }     
       
   /// Alg 1 line 26
-  pure def parent_id (p: Proposal): ProposalID =
+  pure def parent_id(p: Proposal): ProposalID =
     p.block.qc.proposal_id
-
 
   //
   // Algorithm 3 (page 16)
@@ -447,15 +451,12 @@ module monadbft {
   pure def verify_fresh_proposal(tip: Tip): bool ={
     if (tip.view == tip.block_header.qc.view + 1)
       true
-    else match tip.nec {
-      | None =>
-          false
-      | Some(nec) =>
-        and {
-        tip.view == nec.view,
-        tip.block_header.qc.view == nec.highqc_view,
+    else
+      match tip.nec {
+        | None => false
+        | Some(nec) =>
+            tip.view == nec.view and tip.block_header.qc.view == nec.highqc_view
       }
-    }
   }
 
   /// Alg 3 line 1
@@ -463,27 +464,31 @@ module monadbft {
   ///   - It aborts and returns nil if any tip fails the fresh‑proposal checks.
   ///   - Otherwise, it picks and returns the tip with the highest view number.
   /// Warning: the side effects of this function in the psudocode seem wrong, why are we updating the stored TC to None at the start?
-  pure def find_high_tip(tc: TC): Option[Tip] = {
-    val tips = tc.tips
+  pure def find_high_tip(tips: Set[Tip]): Option[Tip] = {
     // The first if else block (L3 -> L7) is skipped because we implemented a separate function for sets of timeout messages (find_high_tip_from_messages).
-    if (not (tips.forall(t => t.verify_fresh_proposal())))
-      None
-    else
-      // argmax (t∈tips) t.view
-      val max_tip = highest_tip(tips)
-      Some(max_tip)
-  }
-
-  /// Alg 3 line 1
-  /// Does the same as find_high_tip(tc), but for a set of timeout messages.
-  pure def find_high_tip_from_messages(msgs: Set[TimeoutMsg]): Option[Tip] = {
-    val tips = get_tips_from_timeouts(msgs)
-    if (not(tips.forall(t => t.verify_fresh_proposal())))
+    if (tips.exists(t => not(t.verify_fresh_proposal())))
       None
     else
       // argmax (t ∈ tips) t.view
-      val max_tip = highest_tip(tips)
-      Some(max_tip)
+      // Returns None if tips is empty
+      tips.fold(None, (acc, t) => {
+        match acc {
+          | None => Some(t)
+          | Some(h) => if (t.view > h.view) Some(t) else acc
+        }
+      })
+  }
+
+  /// Alg 3 line 1
+  /// find_high_tip() for a timeout certificate
+  pure def find_high_tip_from_tc(tc: TC): Option[Tip] = {
+    find_high_tip(tc.tips)
+  }
+
+  /// Alg 3 line 1
+  /// find_high_tip() for a set of timeout messages.
+  pure def find_high_tip_from_messages(msgs: Set[TimeoutMsg]): Option[Tip] = {
+    find_high_tip(get_tips_from_timeouts(msgs))
   }
 
   //
@@ -521,9 +526,9 @@ module monadbft {
         if (acc_timeouts.size() >= Q) {
           val tc = build_tc(acc_timeouts, s.process_id)
           (Some(tc), increment_view(tc.view, s))
-        } else if (acc_timeouts.size() >= F + 1 and not (s.broadcast_timeout.getOrElse(v, false))) {
+        } else if (acc_timeouts.size() >= F + 1 and not(s.already_broadcasted_timeout(v))) {
           // TRIGGER TIMEOUT EVENT
-          (None, s.add_broadcast_timeout(v).trigger_timeout_event())
+          (None, s.mark_broadcasted_timeout(v).trigger_timeout_event())
         } else {
           (None, CSMI::no_output(s))
         }
@@ -532,6 +537,7 @@ module monadbft {
 
     (res2._1, CSMI::join_results(res, res2._2))
   }
+
   /// Alg 4 line 25
   pure def handle_vote(vote: VoteMsg, s: LocalState): (Option[QC], ConsensusResult) = {
     val v = vote.view
@@ -602,7 +608,7 @@ module monadbft {
       // line 52 (non-leader)
       if (not(s.i_am_leader())) CSMI::no_output(s) else
 
-      //line 11 (leader)
+      // line 11 (leader)
 
       // Not enough timeout messages to form tc
       if (tc == None) CSMI::no_output(s) else
@@ -670,23 +676,20 @@ module monadbft {
       else
         reverted_ledger
 
-      pure val new_state = { ...s, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p) }
       pure val vote_msg = {
         view: p.view,
         seq: p.block.seq,
         proposal_id: p.proposal_id,
-        state_hash: state_hash(new_state),
+        state_hash: state_hash(s),
         sigma: s.process_id,
       }
 
       // TODO: send to next leader
-      // [Gabriela] Question: in the paper, they send this message before updating the tip.
-      // Why do we do it after it here?
       pure val next_leader = leader_from_view(p.view + 1)
       pure val send_vote = Set(SendVoteToNextLeader((next_leader, vote_msg)))
 
       {
-        state: new_state,
+        state: { ...s, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p) },
         output: commit.union(early_confirmation).union(send_vote)
       }
     })
@@ -695,8 +698,9 @@ module monadbft {
   //
   // Alg 5 (page 26)
   // Block Recovery
-  // Block recovery is not implemented yet and is simulated using the proposals variable.
   //
+
+  // Block recovery is not implemented yet and is simulated using the proposals variable.
 
 
   //
@@ -705,82 +709,84 @@ module monadbft {
   //
   //
 
+  /// Set of validators participating in consensus
   const validators: Set[Address]
+  /// Number of byzantine nodes
+  const F: int
 
-  const F: int // number of byzantine nodes
-  val Q = 2 * F + 1// number of votes needed to reach consensus
-  val N = validators.size() // number of nodes
-  val leaders = validators.fold(List(), (acc, v) => acc.append(v)) //This adds randomization between runs? Set -> List
-
+  /// Number of votes needed to reach consensus
+  pure val Q = 2 * F + 1
+  /// Number of nodes
+  pure val N = validators.size()
+  // TODO: change between runs
+  pure val leaders = validators.fold(List(), (acc, v) => acc.append(v))
 
   /// Safety property page 10: No two correct validators commit different blocks
   /// for the same sequence number
   def safety =
-    val a = CSMI::s.bookkeeping.committed_proposals.values().flatten()
-    a.forall(p1 => a.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
+    val ps = CSMI::s.bookkeeping.committed_proposals.values().flatten()
+    ps.forall(p1 => ps.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
 
   /// No Tail-Forking (NTF) page 10:
   def ntf =
-    val s = CSMI::s
-    val a = s.bookkeeping.msgHistory.fold(Set(), (s, x) => match x {
+    val votes = CSMI::s.bookkeeping.msgHistory.fold(Set(), (s, x) => match x {
       | Vote(v) => s.setAdd(v)
       | _ => s
     })
-    a.forall(v =>
+    val committed_proposals = CSMI::s.bookkeeping.committed_proposals.values().flatten()
+    votes.forall(v =>
       // If an honest leader’s proposal for sequence number s is voted upon by a majority of honest validators,
       // TODO: filter faulty proposer's proposals
-      a.filter(v2 => v2.seq == v.seq and v2.proposal_id == v.proposal_id).size() > validators.size() / 2
+      votes.filter(v2 => v2.seq == v.seq and v2.proposal_id == v.proposal_id).size() > N / 2
       implies
-      //  then no other proposal can commit at sequence s.
-      s.bookkeeping.committed_proposals.values().flatten().forall(p =>
-        p.block.seq == v.seq implies (p.proposal_id.seq == v.proposal_id.seq and p.proposal_id.byzantine == v.proposal_id.byzantine))
+      // then no other proposal can commit at sequence s.
+      committed_proposals.forall(p =>
+        p.block.seq == v.seq implies
+          (p.proposal_id.seq == v.proposal_id.seq and p.proposal_id.byzantine == v.proposal_id.byzantine))
     )
-
 
   //
   // Initialization constants
   //
-  val sigs = List(0,1,2,3,4).foldl(List(), (acc,v) => acc.append(leader_from_view(v)))
-  val genesis_qc = {
-      c: Set(),
-      view: 0,
-      seq: 0,
-      proposal_id: {seq: 0, view: 0, byzantine: 0},
-      state_hash: List(),
-      sigma: sigs[0],
-    }
+  pure val sigs = range(0, 5).foldl(List(), (acc,v) => acc.append(leader_from_view(v)))
+  pure val genesis_qc = {
+    c: Set(),
+    view: 0,
+    seq: 0,
+    proposal_id: { seq: 0, view: 0, byzantine: 0 },
+    state_hash: List(),
+    sigma: sigs[0],
+  }
   
-  
-  val b1 = build_block(genesis_qc, "VALID_TRANSACTION_INIT_1")
-  val p1 = build_proposal(1, b1, None, None, sigs[1])
-  val votes1 = validators.map(v => {
-    { view : 1, seq : 1, proposal_id : p1.proposal_id, state_hash : List(), sigma : v }
+  pure val b1 = build_block(genesis_qc, "VALID_TRANSACTION_INIT_1")
+  pure val p1 = build_proposal(1, b1, None, None, sigs[1])
+  pure val votes1 = validators.map(v => {
+    { view: 1, seq: 1, proposal_id: p1.proposal_id, state_hash: List(), sigma: v }
   })
-  val qc1 = build_qc(votes1, sigs[2], List())
-  val b2 = build_block(qc1, "VALID_TRANSACTION_INIT_2")
-  val p2 = build_proposal(2, b2, None, None, sigs[2])
-  val votes2 = validators.map(v => {
-    { view : 2, seq : 2, proposal_id : p2.proposal_id, state_hash : List(p1.proposal_id), sigma : v }
+  pure val qc1 = build_qc(votes1, sigs[2], List())
+  pure val b2 = build_block(qc1, "VALID_TRANSACTION_INIT_2")
+  pure val p2 = build_proposal(2, b2, None, None, sigs[2])
+  pure val votes2 = validators.map(v => {
+    { view: 2, seq: 2, proposal_id: p2.proposal_id, state_hash: List(p1.proposal_id), sigma: v }
   })
-  val qc2 = build_qc(votes2, sigs[3], List(p1.proposal_id))
-  val b3 = build_block(qc2, "VALID_TRANSACTION_INIT_3")
-  val p3 = build_proposal(3, b3, None, None, sigs[3])
-  val votes3 = validators.map(v => {
-    { view : 3, seq : 3, proposal_id : p3.proposal_id, state_hash : List(p1.proposal_id, p2.proposal_id), sigma : v }
+  pure val qc2 = build_qc(votes2, sigs[3], List(p1.proposal_id))
+  pure val b3 = build_block(qc2, "VALID_TRANSACTION_INIT_3")
+  pure val p3 = build_proposal(3, b3, None, None, sigs[3])
+  pure val votes3 = validators.map(v => {
+    { view: 3, seq: 3, proposal_id: p3.proposal_id, state_hash: List(p1.proposal_id, p2.proposal_id), sigma: v }
   })
-  val qc3 = build_qc(votes3, sigs[4], List(p1.proposal_id, p2.proposal_id))
-  val b4 = build_block(qc3, "VALID_TRANSACTION_INIT_4")
-  val p4 = build_proposal(4, b4, None, None, sigs[4])
+  pure val qc3 = build_qc(votes3, sigs[4], List(p1.proposal_id, p2.proposal_id))
+  pure val b4 = build_block(qc3, "VALID_TRANSACTION_INIT_4")
+  pure val p4 = build_proposal(4, b4, None, None, sigs[4])
 
-  val ancestors_4 = Map(
+  pure val ancestors_4 = Map(
     p1.proposal_id -> Set(p1.proposal_id),
     p2.proposal_id -> Set(p1.proposal_id),
     p3.proposal_id -> Set(p1.proposal_id, p2.proposal_id),
     p4.proposal_id -> Set(p1.proposal_id, p2.proposal_id, p3.proposal_id)
   )
-  val proposals_4 = Set(p1, p2, p3, p4) 
+  pure val proposals_4 = Set(p1, p2, p3, p4)
   
-
   pure val initial_messages = Set(Prop(p4))
 
   pure def initialize_process_empty(process_id: Address): LocalState = {
@@ -805,17 +811,16 @@ module monadbft {
         ledger: List(p1, p2),
         proposals: proposals_4,
         ancestors: ancestors_4,
-        highest_voted_view : 3,
-        tip : Some({
-          view         : 3,
-          proposal_id  : p3.proposal_id,
-          block_header : header_from_block(b3),
-          sigma        : p3.sigma,
-          nec          : None,
+        highest_voted_view: 3,
+        tip: Some({
+          view: 3,
+          proposal_id: p3.proposal_id,
+          block_header: header_from_block(b3),
+          sigma: p3.sigma,
+          nec: None,
         })
     }
   }
-
 
   pure val initial_bookkeeping: Bookkeeping = {
     committed_proposals: validators.mapBy(_ => Set(p1, p2)),
@@ -854,45 +859,46 @@ module monadbft {
     outputs.fold(env, (e, x) => {
       match x {
         | BroadcastProp(p) =>
-            // Warning: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
-            // and remove the need for a block recovery mechanism.
-            // TODO: refractor this when we have a block recovery mechanism.
-            // TODO: refractor this to be more readable.
-            // TODO: do we need a mechanism to filter out the "bad" proposals.
-            val s_da = env.system.keys().fold(env.system, (p_map, node) => // s_da = system with "data availability"
-              p_map.set(node,
-                { ... p_map.get(node),
-                  proposals : p_map.get(node).proposals.setAdd(p),
-                  ancestors : p_map.get(node).ancestors.put(p.proposal_id, p_map.get(node).ancestors.getOrElse(p.parent_id(), Set()).setAdd(p.parent_id()))
-                }
-              )
+          // Warning: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
+          // and remove the need for a block recovery mechanism.
+          // TODO: refractor this when we have a block recovery mechanism.
+          // TODO: refractor this to be more readable.
+          // TODO: do we need a mechanism to filter out the "bad" proposals.
+          val s_da = env.system.keys().fold(env.system, (p_map, node) => // s_da = system with "data availability"
+            p_map.set(node,
+              { ... p_map.get(node),
+                proposals : p_map.get(node).proposals.setAdd(p),
+                ancestors : p_map.get(node).ancestors.put(p.proposal_id, p_map.get(node).ancestors.getOrElse(p.parent_id(), Set()).setAdd(p.parent_id()))
+              }
             )
-            val env_with_da = { ...env, system: s_da }
-            CSMI::broadcast(env_with_da, Prop(p))
-        | BroadCastTimeout(t) =>
-            CSMI::broadcast(e, Timeout(t))
-        | Commit(p) =>
-            CSMI::bookkeep(e, b => {
-              ...b,
-              committed_proposals: b.committed_proposals.setBy(v, ps => ps.setAdd(p))
-            })
-        | EarlyConfirmation(p) =>
-            e
-        | Confirmation(p) =>
-            e
-        | SendVoteToNextLeader(am) =>
-            pure val updated_env = CSMI::bookkeep(e, b => {
-              ...b, msgHistory: b.msgHistory.setAdd(Vote(am._2)),
-            })
+          )
+          val env_with_da = { ...env, system: s_da }
+          CSMI::broadcast(env_with_da, Prop(p))
 
-            CSMI::broadcast(updated_env, Vote(am._2))
-        | StartTimeout(t) =>
-            CSMI::timeout(e, v, t, should_replace_timeout)
+        | BroadCastTimeout(t) => CSMI::broadcast(e, Timeout(t))
+
+        | Commit(p) => CSMI::bookkeep(e, b => {
+            ...b,
+            committed_proposals: b.committed_proposals.setBy(v, ps => ps.setAdd(p))
+          })
+
+        | EarlyConfirmation(p) => e
+
+        | Confirmation(p) => e
+
+        | SendVoteToNextLeader(am) =>
+          pure val updated_env = CSMI::bookkeep(e, b => {
+            ...b, msgHistory: b.msgHistory.setAdd(Vote(am._2)),
+          })
+
+          CSMI::broadcast(updated_env, Vote(am._2))
+
+        | StartTimeout(t) => CSMI::timeout(e, v, t, should_replace_timeout)
       }
     })
 
 
-  pure val TIMEOUT_PROBABILITY = 20 // 2%
+  pure val TIMEOUT_PROBABILITY = 20 // 20%
   action step = CSMI::step(receive_message, fire_timeout_event, apply_effect, TIMEOUT_PROBABILITY)
   action step_no_timeout = CSMI::step_no_timeout(receive_message, apply_effect)
  } // end of module monadbft

@@ -1,6 +1,13 @@
 // -*- mode: Bluespec; -*-
 
-/// Consensus State Machine Interface (CSMI)
+/**
+ * Consensus State Machine Interface (CSMI)
+ *
+ * A library to handle common patterns in consensus specifications
+ *
+ * Gabriela Moreira,  Josef Widder and Yassine Boukhari,
+ * Informal Systems, 2025
+ */
 module CSMIBase {
   import basicSpells.* from "basicSpells"
 
@@ -204,11 +211,10 @@ module CSMIState {
   action step_no_timeout(
     receive_message: ReceiveMessage[p, s, m, o],
     apply_effect: ApplyEffect[p, s, m, te, o, b]
-  ): bool = {
-    // pick a process that has a message available in its buffer or a timeout
-    nondet v = oneOf(
-      processes.filter(v => s.msgBuffer.get(v) != Set())
-    )
+  ): bool = all {
+    s.msgBuffer.values().flatten() != Set(),
+    // pick a process that has a message available in its buffer
+    nondet v = oneOf(processes.filter(v => s.msgBuffer.get(v) != Set()))
     receive_some_msg(v, receive_message, apply_effect)
   }
 
