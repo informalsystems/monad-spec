@@ -215,10 +215,18 @@ module monadbft {
     s.ledger.foldl(List(), (acc, p) => acc.append(p.proposal_id))
   }
 
-  /// Check if the node is the leader of the current view
-  pure def is_leader(s: LocalState): bool =
-    // TODO: this is just a placeholder
-    s.process_id == "v1"
+  /// Check if a node(other) is the leader of some view
+  pure def is_leader(s: LocalState, signature: Address): bool =
+    leader_from_view(s.curView) == signature
+  
+  /// Check if the node(self) is the leader of the current view
+  pure def i_am_leader(s: LocalState): bool =
+    s.process_id == leader_from_view(s.curView)
+
+  pure def leader_from_view(view: int): Address = {
+    leaders[view % leaders.length()]
+  }
+
 
   /// Check if qc1 extends qc2
   pure def extend(qc1: QC, qc2: QC, ancestors: ProposalID -> Set[ProposalID]): bool =
@@ -552,7 +560,7 @@ module monadbft {
 
   /// Alg 2 line 3 (Only for the leader)
   pure def receive_vote_msg(s: LocalState, v: VoteMsg): ConsensusResult = {
-    if (not(s.is_leader())) CSMI::no_output(s) else
+    if (not(s.i_am_leader())) CSMI::no_output(s) else
     // Line 3
     pure val r = handle_vote(v, s)
     pure val qc = r._1
@@ -592,7 +600,7 @@ module monadbft {
     pure val tc = res._1
     res._2.chain(s => {
       // line 52 (non-leader)
-      if (not(s.is_leader())) CSMI::no_output(s) else
+      if (not(s.i_am_leader())) CSMI::no_output(s) else
 
       //line 11 (leader)
 
@@ -629,7 +637,7 @@ module monadbft {
     }).chain(s => {
       // TODO: add leader check here -> Is this message coming form the leader of the view?
       // Warning: is the view being updated before the Leader check? Lines 35-36.
-      if (p.view != s.curView) CSMI::no_output(s) else
+      if (p.view != s.curView or not (is_leader(s, p.sigma))) CSMI::no_output(s) else
 
       // Warning: The view being updated before the safety check.
       if (not(safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view))) CSMI::no_output(s) else
@@ -674,7 +682,8 @@ module monadbft {
       // TODO: send to next leader
       // [Gabriela] Question: in the paper, they send this message before updating the tip.
       // Why do we do it after it here?
-      pure val send_vote = Set(SendVoteToNextLeader(("v1", vote_msg)))
+      pure val next_leader = leader_from_view(p.view + 1)
+      pure val send_vote = Set(SendVoteToNextLeader((next_leader, vote_msg)))
 
       {
         state: new_state,
@@ -701,17 +710,18 @@ module monadbft {
   const F: int // number of byzantine nodes
   val Q = 2 * F + 1// number of votes needed to reach consensus
   val N = validators.size() // number of nodes
+  val leaders = validators.fold(List(), (acc, v) => acc.append(v)) //This adds randomization between runs? Set -> List
 
-  var s: Environment
 
   /// Safety property page 10: No two correct validators commit different blocks
   /// for the same sequence number
   def safety =
-    val a = s.bookkeeping.committed_proposals.values().flatten()
+    val a = CSMI::s.bookkeeping.committed_proposals.values().flatten()
     a.forall(p1 => a.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
 
   /// No Tail-Forking (NTF) page 10:
   def ntf =
+    val s = CSMI::s
     val a = s.bookkeeping.msgHistory.fold(Set(), (s, x) => match x {
       | Vote(v) => s.setAdd(v)
       | _ => s
@@ -723,45 +733,55 @@ module monadbft {
       implies
       //  then no other proposal can commit at sequence s.
       s.bookkeeping.committed_proposals.values().flatten().forall(p =>
-        p.block.seq == v.seq implies p.proposal_id == v.proposal_id)
+        p.block.seq == v.seq implies (p.proposal_id.seq == v.proposal_id.seq and p.proposal_id.byzantine == v.proposal_id.byzantine))
     )
 
 
   //
   // Initialization constants
   //
-
+  val sigs = List(0,1,2,3,4).foldl(List(), (acc,v) => acc.append(leader_from_view(v)))
   val genesis_qc = {
       c: Set(),
       view: 0,
       seq: 0,
       proposal_id: {seq: 0, view: 0, byzantine: 0},
       state_hash: List(),
-      sigma: "v1",
+      sigma: sigs[0],
     }
+  
+  
   val b1 = build_block(genesis_qc, "VALID_TRANSACTION_INIT_1")
-  val p1 = build_proposal(1, b1, None, None, "v1")
+  val p1 = build_proposal(1, b1, None, None, sigs[1])
   val votes1 = validators.map(v => {
     { view : 1, seq : 1, proposal_id : p1.proposal_id, state_hash : List(), sigma : v }
   })
-  val qc1 = build_qc(votes1, "v1", List())
+  val qc1 = build_qc(votes1, sigs[2], List())
   val b2 = build_block(qc1, "VALID_TRANSACTION_INIT_2")
-  val p2 = build_proposal(2, b2, None, None, "v1")
+  val p2 = build_proposal(2, b2, None, None, sigs[2])
   val votes2 = validators.map(v => {
     { view : 2, seq : 2, proposal_id : p2.proposal_id, state_hash : List(p1.proposal_id), sigma : v }
   })
-  val qc2 = build_qc(votes2, "v1", List(p1.proposal_id))
+  val qc2 = build_qc(votes2, sigs[3], List(p1.proposal_id))
   val b3 = build_block(qc2, "VALID_TRANSACTION_INIT_3")
-  val p3 = build_proposal(3, b3, None, None, "v1")
-  val ancestors_3 = Map(
+  val p3 = build_proposal(3, b3, None, None, sigs[3])
+  val votes3 = validators.map(v => {
+    { view : 3, seq : 3, proposal_id : p3.proposal_id, state_hash : List(p1.proposal_id, p2.proposal_id), sigma : v }
+  })
+  val qc3 = build_qc(votes3, sigs[4], List(p1.proposal_id, p2.proposal_id))
+  val b4 = build_block(qc3, "VALID_TRANSACTION_INIT_4")
+  val p4 = build_proposal(4, b4, None, None, sigs[4])
+
+  val ancestors_4 = Map(
     p1.proposal_id -> Set(p1.proposal_id),
     p2.proposal_id -> Set(p1.proposal_id),
-    p3.proposal_id -> Set(p1.proposal_id, p2.proposal_id)
+    p3.proposal_id -> Set(p1.proposal_id, p2.proposal_id),
+    p4.proposal_id -> Set(p1.proposal_id, p2.proposal_id, p3.proposal_id)
   )
-  val proposals_3 = Set(p1, p2, p3) 
+  val proposals_4 = Set(p1, p2, p3, p4) 
   
 
-  pure val initial_messages = Set(Prop(p3))
+  pure val initial_messages = Set(Prop(p4))
 
   pure def initialize_process_empty(process_id: Address): LocalState = {
     high_tip: None,
@@ -783,14 +803,14 @@ module monadbft {
     { ... base,
         curView: 2,
         ledger: List(p1, p2),
-        proposals: proposals_3,
-        ancestors: ancestors_3,
-        highest_voted_view : 2,
+        proposals: proposals_4,
+        ancestors: ancestors_4,
+        highest_voted_view : 3,
         tip : Some({
-          view         : 2,
-          proposal_id  : p2.proposal_id,
-          block_header : header_from_block(b2),
-          sigma        : process_id,
+          view         : 3,
+          proposal_id  : p3.proposal_id,
+          block_header : header_from_block(b3),
+          sigma        : p3.sigma,
           nec          : None,
         })
     }
@@ -872,7 +892,7 @@ module monadbft {
     })
 
 
-  pure val TIMEOUT_PROBABILITY = 2 // 2%
+  pure val TIMEOUT_PROBABILITY = 20 // 2%
   action step = CSMI::step(receive_message, fire_timeout_event, apply_effect, TIMEOUT_PROBABILITY)
   action step_no_timeout = CSMI::step_no_timeout(receive_message, apply_effect)
  } // end of module monadbft
