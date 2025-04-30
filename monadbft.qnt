@@ -3,8 +3,8 @@
 module monadbft {
   import basicSpells.* from "./basicSpells"
   import CSMIBase as CSMI from "csmi"
-  import CSMIBase.chain from "csmi"
-  import CSMIBase.chain_state from "csmi"
+  import CSMIBase.and_then from "csmi"
+  import CSMIBase.and_then_state from "csmi"
   import CSMIState(processes = validators) as CSMI from "csmi"
 
   val BLOCK_PAYLOAD = "VALID_TRANSACTION" //TODO: this is just a placeholder
@@ -505,12 +505,12 @@ module monadbft {
     if (v < s.curView) (None, CSMI::no_output(s)) else
 
     pure val res = increment_view(t.tip.block_header.qc.view, s)
-      .chain(s => increment_view(t.tip.view, s))
+      .and_then(s => increment_view(t.tip.view, s))
 
-    pure val res2 = res.state.chain_state(s => {
+    pure val res2 = res.state.and_then_state(s => {
       // Timeout is new, let's accumulate it
       val acc_timeouts = s.timeouts.getOrElse(v, Set()).setAdd(t)
-      s.add_timeouts(v, acc_timeouts).chain_state(s => {
+      s.add_timeouts(v, acc_timeouts).and_then_state(s => {
         // Check if we have a quorum
         if (acc_timeouts.size() >= Q) {
           val tc = build_tc(acc_timeouts, s.process_id)
@@ -536,7 +536,7 @@ module monadbft {
     // Vote is new, let's accumulate it
     val acc_votes = s.votes.getOrElse(id, Set()).setAdd(vote)
 
-    s.add_votes(id, acc_votes).chain_state(s => {
+    s.add_votes(id, acc_votes).and_then_state(s => {
       // Check if we have a quorum
       if (acc_votes.size() >= Q) {
         val qc = build_qc(acc_votes, s.process_id, state_hash(s))
@@ -560,7 +560,7 @@ module monadbft {
     pure val qc = r._1
     pure val res = r._2
 
-    res.chain(s => {
+    res.and_then(s => {
       if (qc == None) CSMI::no_output(s) else
 
       val new_block = build_block(qc.unwrap(), BLOCK_PAYLOAD)
@@ -592,7 +592,7 @@ module monadbft {
   pure def receive_timeout_msg(s: LocalState, t: TimeoutMsg): ConsensusResult = {
     pure val res = handle_timeout(t, s)
     pure val tc = res._1
-    res._2.chain(s => {
+    res._2.and_then(s => {
       // line 52 (non-leader)
       if (not(s.is_leader())) CSMI::no_output(s) else
 
@@ -601,7 +601,7 @@ module monadbft {
       // Not enough timeout messages to form tc
       if (tc == None) CSMI::no_output(s) else
 
-      { ...s, last_tc: tc, high_tip: tc.unwrap().high_tip }.chain_state(s => {
+      { ...s, last_tc: tc, high_tip: tc.unwrap().high_tip }.and_then_state(s => {
         // TODO: it should be safe to unwrap here, but we should check.
         val high_tip = tc.unwrap().high_tip.unwrap()
 
@@ -626,9 +626,9 @@ module monadbft {
     match p.tc {
       | None => CSMI::no_output(s)
       | Some(tc) => increment_view(tc.view, s)
-    }.chain(s => {
+    }.and_then(s => {
       increment_view(p.block.qc.view, s)
-    }).chain(s => {
+    }).and_then(s => {
       // TODO: add leader check here -> Is this message coming form the leader of the view?
       // Warning: is the view being updated before the Leader check? Lines 35-36.
       if (p.view != s.curView) CSMI::no_output(s) else

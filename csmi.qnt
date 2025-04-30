@@ -59,7 +59,7 @@ module CSMIBase {
     apply_effect(new, v, res.output)
   }
 
-  pure def chain(
+  pure def and_then(
     res: ConsensusResult[LocalState[p, s], o],
     f: (LocalState[p, s]) => ConsensusResult[LocalState[p, s], o]
   ): ConsensusResult[LocalState[p, s], o] = {
@@ -67,7 +67,7 @@ module CSMIBase {
     join_results(res, new_res)
   }
 
-  pure def chain_state(
+  pure def and_then_state(
     state: LocalState[p, s],
     f: (LocalState[p, s]) => r
   ): r = {
