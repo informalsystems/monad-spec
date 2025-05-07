@@ -35,8 +35,8 @@ module monadbft {
     votes: ProposalID -> Set[VoteMsg],
     // Mapping from view number to set of timeout messages (Alg 4 line 17)
     timeouts: int -> Set[TimeoutMsg],
-    // Set of view numbers for which a timeout was broadcasted (Alg 4 line 21/22)
-    broadcasted_timeouts: Set[int],
+    // Set of view numbers for which a timeout was broadcast (Alg 4 line 21/22)
+    timeouts_already_broadcast: Set[int],
 
     // Extra variables to provide data availability and abstract some of the logic.
 
@@ -204,12 +204,12 @@ module monadbft {
     { ...s, timeouts: s.timeouts.put(view, timeouts) }
   }
 
-  pure def mark_broadcast_timeout(s: LocalState, view: int): LocalState = {
-    { ...s, broadcasted_timeouts: s.broadcasted_timeouts.setAdd(view) }
+  pure def mark_already_broadcast_timeout(s: LocalState, view: int): LocalState = {
+    { ...s, timeouts_already_broadcast: s.timeouts_already_broadcast.setAdd(view) }
   }
 
-  pure def already_broadcast_timeout(s: LocalState, view: int): bool = {
-    s.broadcasted_timeouts.contains(view)
+  pure def was_timeout_already_broadcast(s: LocalState, view: int): bool = {
+    s.timeouts_already_broadcast.contains(view)
   }
 
   pure def add_votes(s: LocalState, proposal_id: ProposalID, votes: Set[VoteMsg]): LocalState =
@@ -526,9 +526,9 @@ module monadbft {
         if (acc_timeouts.size() >= Q) {
           val tc = build_tc(acc_timeouts, s.process_id)
           (Some(tc), increment_view(tc.view, s))
-        } else if (acc_timeouts.size() >= F + 1 and not(s.already_broadcasted_timeout(v))) {
+        } else if (acc_timeouts.size() >= F + 1 and not(s.timeouts_already_broadcast.contains(v))) {
           // TRIGGER TIMEOUT EVENT
-          (None, s.mark_broadcasted_timeout(v).trigger_timeout_event())
+          (None, s.mark_already_broadcast_timeout(v).trigger_timeout_event())
         } else {
           (None, CSMI::no_output(s))
         }
@@ -796,7 +796,7 @@ module monadbft {
     proposals: Set(),
     ancestors: Map(),
     timeouts: Map(),
-    broadcasted_timeouts: Set(),
+    timeouts_already_broadcast: Set(),
     curView: 0,
     ledger: [],
     highest_voted_view: -1,
