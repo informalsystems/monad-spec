@@ -204,11 +204,11 @@ module monadbft {
     { ...s, timeouts: s.timeouts.put(view, timeouts) }
   }
 
-  pure def mark_broadcasted_timeout(s: LocalState, view: int): LocalState = {
+  pure def mark_broadcast_timeout(s: LocalState, view: int): LocalState = {
     { ...s, broadcasted_timeouts: s.broadcasted_timeouts.setAdd(view) }
   }
 
-  pure def already_broadcasted_timeout(s: LocalState, view: int): bool = {
+  pure def already_broadcast_timeout(s: LocalState, view: int): bool = {
     s.broadcasted_timeouts.contains(view)
   }
 
@@ -432,7 +432,7 @@ module monadbft {
         nec: p.nec,
       })
     else
-      find_high_tip_from_tc(p.tc.unwrap()) // Warning: why there is no check for none TC
+      find_high_tip_from_tc(p.tc.unwrap()) // Warning: why is there no check for none TC?
   }     
       
   /// Alg 1 line 26
@@ -463,7 +463,7 @@ module monadbft {
   /// Gathers all validator tips from a timeout certificate or timeout messages.
   ///   - It aborts and returns nil if any tip fails the fresh‑proposal checks.
   ///   - Otherwise, it picks and returns the tip with the highest view number.
-  /// Warning: the side effects of this function in the psudocode seem wrong, why are we updating the stored TC to None at the start?
+  /// Warning: the side effects of this function in the pseudocode seem wrong, why are we updating the stored TC to None at the start?
   pure def find_high_tip(tips: Set[Tip]): Option[Tip] = {
     // The first if else block (L3 -> L7) is skipped because we implemented a separate function for sets of timeout messages (find_high_tip_from_messages).
     if (tips.exists(t => not(t.verify_fresh_proposal())))
@@ -859,7 +859,7 @@ module monadbft {
     outputs.fold(env, (e, x) => {
       match x {
         | BroadcastProp(p) =>
-          // Warning: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
+          // Abstraction: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
           // and remove the need for a block recovery mechanism.
           // TODO: refractor this when we have a block recovery mechanism.
           // TODO: refractor this to be more readable.
