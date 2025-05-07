@@ -10,10 +10,9 @@
  */
 module monadbft {
   import basicSpells.* from "./basicSpells"
-  import CSMIBase as CSMI from "csmi"
-  import CSMIBase.and_then from "csmi"
-  import CSMIBase.and_then_state from "csmi"
-  import CSMIState(processes = validators) as CSMI from "csmi"
+  import CSMI(processes = validators) as CSMI from "csmi"
+  import CSMI.and_then from "csmi"
+  import CSMI.and_then_state from "csmi"
 
   // TODO: this is just a placeholder
   pure val BLOCK_PAYLOAD = "VALID_TRANSACTION"
@@ -47,13 +46,13 @@ module monadbft {
     ancestors: ProposalID -> Set[ProposalID],
   }
 
+  type TimeoutEvent = int
+
   type Message =
     | Prop(Proposal)
     | Vote(VoteMsg)
     | Timeout(TimeoutMsg)
     | NoEndorsement(NoEndorsementMsg)
-
-  type TimeoutEventData = int
 
   type ConsensusOutput =
     | BroadcastProp(Proposal)
@@ -75,8 +74,7 @@ module monadbft {
   // for MonadBFT
   type LocalState = CSMI::LocalState[Address, State]
   type ConsensusResult = CSMI::ConsensusResult[LocalState, ConsensusOutput]
-  type Environment = CSMI::Environment[Address, State, Message, TimeoutEventData, Bookkeeping]
-  type TimeoutEvent = CSMI::TimeoutEvent[TimeoutEventData]
+  type Environment = CSMI::Environment[Address, State, Message, TimeoutEvent, Bookkeeping]
 
   //
   // Data structures (page 8)
