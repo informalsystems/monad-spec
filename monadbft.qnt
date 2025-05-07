@@ -501,7 +501,7 @@ module monadbft {
   /// We pass view instead of cert to simplify the code.
   pure def increment_view(view: int, s: LocalState): ConsensusResult = {
     if (view >= s.curView)
-      // Increment view to next and reset the timer, old timers are discarded by CSMI.
+      // Increment view to next and reset the timer, old timers are discarded at apply_effect
       { state: { ...s, curView: view + 1 }, output: Set(StartTimeout(view + 1)) }
     else
       CSMI::no_output(s)
@@ -851,10 +851,6 @@ module monadbft {
     else
       { state: state, output: Set() }
 
-  pure def should_replace_timeout(old: TimeoutEvent, new: TimeoutEvent): bool =
-    // We want the freshest timeout to be kept
-    new > old
-
   pure def apply_effect(env: Environment, v: Address, outputs: Set[ConsensusOutput]): Environment =
     outputs.fold(env, (e, x) => {
       match x {
@@ -893,7 +889,13 @@ module monadbft {
 
           CSMI::broadcast(updated_env, Vote(am._2))
 
-        | StartTimeout(t) => CSMI::timeout(e, v, t, should_replace_timeout)
+        | StartTimeout(t) =>
+          pure val existing_timeouts = CSMI::get_timeouts(e, v)
+          // We want to have a single active timeout per process
+          if (existing_timeouts == Set() or existing_timeouts.getOnlyElement() < t)
+            CSMI::timeout(CSMI::reset_timeouts(e, v), v, t)
+          else
+            e
       }
     })
 
