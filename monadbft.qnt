@@ -796,7 +796,7 @@ module monadbft {
     proposals: Set(),
     ancestors: Map(),
     timeouts: Map(),
-    broadcast_timeout: Map(),
+    broadcasted_timeouts: Set(),
     curView: 0,
     ledger: [],
     highest_voted_view: -1,
