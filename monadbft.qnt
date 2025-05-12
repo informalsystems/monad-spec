@@ -742,7 +742,18 @@ module monadbft {
         p.block.seq == v.seq implies
           (p.proposal_id.seq == v.proposal_id.seq and p.proposal_id.byzantine == v.proposal_id.byzantine))
     )
-
+  
+  /// Witness: Search for a scenario where a proposal gets reproposed.
+  def reproposal =
+    not(
+    val proposals = CSMI::s.bookkeeping.msgHistory.fold(Set(), (s, x) => match x {
+      | Prop(p) => s.setAdd(p)
+      | _ => s
+    })
+    proposals.exists(p =>
+      proposals.exists(p2 =>
+        p.proposal_id != p2.proposal_id and p.block.seq == p2.block.seq))
+    )
   //
   // Initialization constants
   //
@@ -867,7 +878,11 @@ module monadbft {
             )
           )
           val env_with_da = { ...env, system: s_da }
-          CSMI::broadcast(env_with_da, Prop(p))
+          val env_with_bk = CSMI::bookkeep(env_with_da, b => {
+            ...b,
+            msgHistory: b.msgHistory.setAdd(Prop(p)),
+          })
+          CSMI::broadcast(env_with_bk, Prop(p))
 
         | BroadCastTimeout(t) => CSMI::broadcast(e, Timeout(t))
 
@@ -898,7 +913,7 @@ module monadbft {
     })
 
 
-  pure val TIMEOUT_PROBABILITY = 20 // 20%
+  pure val TIMEOUT_PROBABILITY = 50 // 20%
   action step = CSMI::step(receive_message, fire_timeout_event, apply_effect, TIMEOUT_PROBABILITY)
   action step_no_timeout = CSMI::step_no_timeout(receive_message, apply_effect)
  } // end of module monadbft
