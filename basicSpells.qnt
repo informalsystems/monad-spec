@@ -351,10 +351,47 @@ module basicSpells {
     assert(findFirst([1, 2, 3], x => x == 4) == None),
   }
 
+  /// `setByWithDefault(m, k, op, default)` is a map that is the same as `m` except that
+  /// the value associated with `k` is `op(m[k])` if `k` is present in `m`, and `op(default)` otherwise.
+  ///
+  /// - @param m: a map from type `a` to type `b`
+  /// - @param k: a key of type `a`
+  /// - @param op: a function to transform the value of the key
+  /// - @param default: the value to use if the key is not present in the map
+  /// - @returns a new map with the updated key.
+  pure def setByWithDefault(m: a -> b, k: a, op: (b) => b, default: b): a -> b = {
+    if (m.has(k))
+      m.setBy(k, op)
+    else
+      m.put(k, default).setBy(k, op)
+  }
+
+  run setByWithDefaultTest = all {
+    assert(setByWithDefault(Map(1 -> 2, 2 -> 3), 1, x => x + 1, 0) == Map(1 -> 3, 2 -> 3)),
+    assert(setByWithDefault(Map(1 -> 2, 2 -> 3), 3, x => x + 1, 0) == Map(1 -> 2, 2 -> 3, 3 -> 1)),
+  }
+
+  //// Returns a set of the elements in the list.
+  ////
+  //// - @param list a list
+  //// - @returns a set of the elements in list
+  pure def toSet(list: List[a]): Set[a] = {
+      list.foldl(Set(), (s, e) => s.union(Set(e)))
+  }
+
   pure def unwrap(value: Option[a]): a = {
     match value {
       | None => Map().get(value)
       | Some(x) => x
     }
+  }
+
+  pure def filterMap(s: Set[a], f: (a) => Option[b]): Set[b] = {
+    s.fold(Set(), (acc, e) => {
+      match f(e) {
+        | Some(x) => acc.union(Set(x))
+        | None => acc
+      }
+    })
   }
 }
