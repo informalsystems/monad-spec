@@ -1,4 +1,4 @@
-# Tendermint Consensus specification in Quint
+# MonadBFT Consensus specification in Quint
 
 A Quint specification of MonadBFT consensus, based on the
 [paper](https://arxiv.org/abs/2502.20692), using the Consensus State Machine Interface (CSMI) library.
