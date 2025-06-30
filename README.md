@@ -22,11 +22,11 @@ We define the following properties:
 To check that they hold in the absence of byzantine nodes, run the simulator:
 
 ``` sh
-$ quint run monadbft.qnt --main test --max-steps=200 --invariant=safety
+quint run monadbft.qnt --main test --max-steps=200 --invariant=safety
 ```
 
 ``` sh
-$ quint run monadbft.qnt --main test --max-steps=200 --invariant=ntf
+quint run monadbft.qnt --main test --max-steps=200 --invariant=ntf
 ```
 to disable timeout events in the simulator, run with the option `--step=step_no_timeout`
 
@@ -35,5 +35,26 @@ to disable timeout events in the simulator, run with the option `--step=step_no_
 We provide witnesses to show interesting execution scenarios. To look for a case where a block is reproposed in a subsequent view, run:
 
 ``` sh
-$ quint run monadbft.qnt --main test --max-steps=200 --invariant=reproposal
+quint run monadbft.qnt --main test --max-steps=200 --invariant=no_reproposals
+```
+
+As the state is quite big, it's easier to see the reproposals in the REPL. Run this command to enter the REPL with the `test` module already loaded:
+
+``` sh
+quint -r monadbft.qnt::test
+```
+
+Then, you can use `q::test` to run the simulation and find a violation inside the REPL:
+
+```
+Quint REPL 0.25.1
+Type ".exit" to exit, or ".help" for more information
+>>> q::test(100, 200, 1, init, step, no_reproposals)
+"violation"
+>>> reproposals
+// shows pairs of different proposals for the same block
+>>> state
+// shows the entire state when the reproposal happened
+>>> q::lastTrace
+// shows the entire trace leading to this point
 ```

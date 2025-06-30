@@ -744,16 +744,22 @@ module monadbft {
     )
   
   /// Witness: Search for a scenario where a proposal gets reproposed.
-  def reproposal =
-    not(
+  val reproposals =
     val proposals = CSMI::s.bookkeeping.msgHistory.fold(Set(), (s, x) => match x {
       | Prop(p) => s.setAdd(p)
       | _ => s
     })
-    proposals.exists(p =>
-      proposals.exists(p2 =>
-        p.proposal_id != p2.proposal_id and p.block.seq == p2.block.seq))
-    )
+    proposals.map(p =>
+      proposals.filterMap(p2 =>
+        if (p.proposal_id != p2.proposal_id and p.block.seq == p2.block.seq)
+          Some((p, p2))
+        else
+          None
+      )
+    ).flatten()
+
+  val no_reproposals = reproposals.size() == 0
+
   //
   // Initialization constants
   //
@@ -866,8 +872,8 @@ module monadbft {
         | BroadcastProp(p) =>
           // Abstraction: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
           // and remove the need for a block recovery mechanism.
-          // TODO: refractor this when we have a block recovery mechanism.
-          // TODO: refractor this to be more readable.
+          // TODO: refactor this when we have a block recovery mechanism.
+          // TODO: refactor this to be more readable.
           // TODO: do we need a mechanism to filter out the "bad" proposals.
           val s_da = env.system.keys().fold(env.system, (p_map, node) => // s_da = system with "data availability"
             p_map.set(node,
@@ -916,6 +922,14 @@ module monadbft {
   pure val TIMEOUT_PROBABILITY = 20 // 20%
   action step = CSMI::step(receive_message, fire_timeout_event, apply_effect, TIMEOUT_PROBABILITY)
   action step_no_timeout = CSMI::step_no_timeout(receive_message, apply_effect)
+
+  // Helpers to expose things to the REPL
+  val state = CSMI::s
+
+  action receive(v) = all {
+    CSMI::receive_some_msg(v, receive_message, apply_effect)
+  }
+
  } // end of module monadbft
 
 
