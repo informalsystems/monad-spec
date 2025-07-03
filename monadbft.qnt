@@ -760,6 +760,14 @@ module monadbft {
 
   val no_reproposals = reproposals.size() == 0
 
+  /// To be used in REPL to view the reproposals
+  val display_reproposals = 
+    reproposals.map(x => {  view: x._1.view, 
+                            payload_hash: x._1.block.payload_hash, 
+                            propID: x._1.proposal_id})
+
+  //  q::lastTrace.listMap(s => s.monadbft::CSMI::s.system.values().map(s => (s.process_id,s.curView)).setToMap())
+
   //
   // Initialization constants
   //
@@ -930,10 +938,25 @@ module monadbft {
     CSMI::receive_some_msg(v, receive_message, apply_effect)
   }
 
+  action timeout(v) = all {
+    CSMI::fire_some_timeout(v, fire_timeout_event, apply_effect)
+  }
+
  } // end of module monadbft
 
 
 module test {
   import monadbft(validators = Set("v1", "v2", "v3", "v4"), F = 1).*
   import basicSpells.* from "./basicSpells"
+
+  run simple_demo_Test = 
+    init
+    .expect(state.system.get("v2").curView == 2)
+    .then(receive("v2"))
+    .expect(state.msgBuffer.get("v2").size() == 1)
+    .expect(state.system.get("v2").curView == 4)
+    .expect(state.activeTimeouts.get("v2") == Set(4))
+    .then(timeout("v2"))
+    .expect(state.msgBuffer.get("v1").size() == 3)
+
 } // end of module test
