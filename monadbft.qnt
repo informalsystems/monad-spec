@@ -954,7 +954,7 @@ module test {
     .expect(state.system.get("v2").curView == 2)
     .then(receive("v2"))
     .expect(state.msgBuffer.get("v2").size() == 1)
-    .expect(state.system.get("v2").curView == 4)
+    .expect(state.system.get("v2").curView == 3)
     .expect(state.activeTimeouts.get("v2") == Set(4))
     .then(timeout("v2"))
     .expect(state.msgBuffer.get("v1").size() == 3)
