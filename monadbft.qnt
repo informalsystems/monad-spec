@@ -4,96 +4,13 @@ module monadbft {
   import basicSpells.* from "lib/basicSpells"
   import rareSpells.* from "lib/rareSpells"
   import csmi(processes = validators) as csmi from "csmi"
+  import types.* from "types"
+  import utils.* from "utils"
 
   /// Set of validators participating in the consensus.
   const validators: Set[Address]
   /// Number of byzantine nodes
   const F: int
-
-  //
-  // Wiring into the reusable consensus state machine interface
-  //
-  type TimeoutData = int
-  type InternalEvent = TimeoutEvent(TimeoutData)
-
-  type Message =
-    | Prop(Proposal)
-    | Vote(VoteMsg)
-    | Timeout(TimeoutMsg)
-    | NoEndorsement(NoEndorsementMsg)
-
-  type Effects =
-    | BroadcastProp(Proposal)
-    | BroadCastTimeout(TimeoutMsg)
-    | Commit(Proposal)
-    | EarlyConfirmation(Proposal)
-    | Confirmation(Proposal)
-    | SendVoteToNextLeader((Address, VoteMsg))
-    | StartTimeout(TimeoutData)
-    // Algorithm 5 (block recovery) has more responses
-
-  type Logging = {
-    committed_proposals: Address -> Set[Proposal],
-    msgHistory: Set[Message],
-    timeoutHistory: Set[TimeoutData],
-  }
-
-  // Define types for the parameterized CSMI types with the proper type arguments
-  // for MonadBFT
-  type LocalState = csmi::LocalState[Address, State]
-  type Transition = csmi::Transition[LocalState, Effects]
-  type Transitions = csmi::Transitions[Transition]
-
-  type EnvExtensions = {
-    proposals_mock: Set[Proposal],
-    ancestors_mock: ProposalID -> Set[ProposalID],
-  }
-
-  type Environment = csmi::Environment[
-    Address,
-    State,
-    Message,
-    InternalEvent,
-    Logging,
-    EnvExtensions
-  ]
-
-  type LocalContext = csmi::LocalContext[Message, InternalEvent, EnvExtensions]
-  pure def env_to_context(
-    env: Environment,
-    process_id: Address
-  ): LocalContext =
-    {
-      msgBuffer: env.msgBuffer.getOrElse(process_id, Set()),
-      internalBuffer: env.internalBuffer.getOrElse(process_id, Set()),
-      proposals_mock: env.extensions.proposals_mock,
-      ancestors_mock: env.extensions.ancestors_mock,
-    }
-
-  //
-  // Some utilities to handle state accumulation
-  //
-  pure def nop(s: LocalState): Transition = {
-    { postState: s, effects: Set() }
-  }
-
-  pure def join_results(
-    t1: Transition,
-    t2: Transition
-  ): Transition = {
-    { postState: t2.postState, effects: t1.effects.union(t2.effects) }
-  }
-
-  pure def and_then(
-    t: Transition,
-    f: LocalState => Transition
-  ): Transition =
-    join_results(t, f(t.postState))
-
-  pure def and_then_state(
-    state: LocalState,
-    f: LocalState => r
-  ): r = f(state)
 
   /// Number of votes needed to reach consensus
   pure val Q = 2 * F + 1
@@ -102,148 +19,14 @@ module monadbft {
   pure val leaders = validators.fold(List(), (acc, v) => acc.append(v))
 
   pure val BLOCK_PAYLOAD = "VALID_TRANSACTION"
-  type Address = str
-
-  type State = {
-    // Variables from Algorithm 2
-    high_tip: Option[Tip],
-    tip: Option[Tip],
-    last_tc: Option[TC],
-    curView: int,
-    ledger: Ledger,
-    highest_voted_view: int,
-    // Set of view numbers for which a timeout was broadcast (Alg 4 line 21/22)
-    timeouts_already_broadcast: Set[int],
-  }
 
   //
-  // Data structures (page 8)
-  //
-
-  type Ledger = List[Proposal]
-  type ProposalID = { seq: int, view: int, byzantine: int }
-  // The signature is symbolic, we represent it with the sender address
-  type Signature = Address
-  // We don't model hashes explicitly, but under the assumption of collision-free hash functions,
-  // we can use this model to test for equality.
-  type StateHash = List[ProposalID]
-
-  /// ⟨view, proposal id, block header, σ, nec⟩ (page 8)
-  type Tip = {
-    view: int,
-    proposal_id: ProposalID,
-    block_header: BlockHeader,
-    sigma: Signature,
-    nec: Option[NEC],
-  }
-
-  /// ⟨view, seq, proposal id, state hash, σ⟩ (page 8)
-  type VoteMsg = {
-    view: int,
-    seq: int,
-    proposal_id: ProposalID,
-    state_hash: StateHash,
-    sigma: Signature,
-  }
-
-  /// ⟨view, highqc_view, σ⟩ (page 9)
-  type NoEndorsementMsg = {
-    view: int,
-    highqc_view: int,
-    sigma: Signature,
-  }
-
-  /// ⟨view, tip, tc, σ⟩ (page 9)
-  type TimeoutMsg = {
-    view: int,
-    tip: Tip,
-    // Timeout certificate use tc.view. Needed to avoid cyclic data type.
-    // TODO: Maybe this should be an option
-    tc: TCAux,
-    sigma: Signature,
-  }
-
-  /// ⟨view, seq, proposal id, state hash, Σ⟩ (page 8)
-  type QC = {
-    c: Set[VoteMsg],
-    view: int,
-    seq: int,
-    proposal_id: ProposalID,
-    state_hash: StateHash,
-    sigma: Signature,
-  }
-
-  /// TC = ⟨view, tips, high_tip, Σ⟩ (page 9)
-  type TC = {
-    view: int,
-    high_tip: Option[Tip],
-    tips: Set[Tip],
-    sigma: Signature,
-    c: Set[TimeoutMsg],
-  }
-
-  /// Auxiliary type for timeout certificate to avoid circular data types
-  type TCAux = {
-    view: int,
-    high_tip: Option[Tip],
-    tips: Set[Tip],
-    sigma: Signature,
-  }
-
-  /// ⟨view, highqc view, Σ⟩ (page 9)
-  type NEC = {
-    view: int,
-    highqc_view: int,
-    sigma: Signature,
-    c: Set[NoEndorsementMsg]
-  }
-
-  /// We don't model hashes explicitly, but under the assumption of collision-free hash functions,
-  /// we can use this model to test for equality.
-  type BlockHash = {
-    seq: int,
-    payload_hash: str,
-    qc: QC
-  }
-
-  /// ⟨seq, payload, payload hash, qc, block hash⟩ (page 8)
-  type Block = {
-    seq: int,
-    payload: str,
-    payload_hash: str,
-    qc: QC,
-    block_hash: BlockHash
-  }
-
-  /// ⟨seq, payload hash, qc, block hash⟩ (page 8)
-  type BlockHeader = {
-    seq: int,
-    payload_hash: str,
-    qc: QC,
-    block_hash: BlockHash
-  }
-
-  /// ⟨view, proposal id, block, σ, tc, nec⟩ (page 8)
-  type Proposal = {
-    view: int,
-    proposal_id: ProposalID,
-    block: Block,
-    sigma: Signature,
-    tc: Option[TC],
-    nec: Option[NEC],
-  }
-
-  //
-  // State manipulation utilities
+  // Utility functions
   //
 
   pure def mark_already_broadcast_timeout(s: LocalState, view: int): LocalState = {
     { ...s, timeouts_already_broadcast: s.timeouts_already_broadcast.setAdd(view) }
   }
-
-  //
-  // Utility functions
-  //
 
   /// Hash is modeled as identity for payloads
   pure def hash(s: str): str = {
@@ -527,7 +310,7 @@ module monadbft {
       { postState: { ...s, curView: view + 1 }, effects: Set(StartTimeout(view + 1)) }
     else
       // If we are already in a higher view, we do not change the state.
-      { postState: s, effects: Set() }
+      noop(s)
   }
 
 
@@ -550,47 +333,6 @@ module monadbft {
     }
   }
 
-  pure def get_proposals(
-    messages: Set[Message]
-  ): Set[Proposal] =
-    messages.filterMap(m => {
-        match m {
-          | Prop(p) => Some(p)
-          | _ => None
-        }
-    })
-
-  pure def get_votes(
-    messages: Set[Message]
-  ): Set[VoteMsg] =
-    messages.filterMap(m => {
-        match m {
-          | Vote(v) => Some(v)
-          | _ => None
-        }
-    })
-
-  pure def get_timeouts(
-    messages: Set[Message]
-  ): Set[TimeoutMsg] =
-    messages.filterMap(m => {
-        match m {
-          | Timeout(t) => Some(t)
-          | _ => None
-        }
-    })
-
-  pure def get_timeout_events(
-    events: Set[InternalEvent]
-  ): Set[TimeoutData] =
-    events.filterMap(e => {
-        match e {
-          | TimeoutEvent(data) => Some(data)
-          | _ => None
-        }
-    })
-
-
   pure def handle_proposal(
     ls: LocalState,
     p: Proposal,
@@ -598,16 +340,16 @@ module monadbft {
     ancestors_mock: ProposalID -> Set[ProposalID] // This is a mock environment extension to simulate ancestor fetching
   ): Transition = {
     match p.tc {
-      | None => nop(ls)
+      | None => noop(ls)
       | Some(tc) => increment_view(tc.view, ls)
     }.and_then(s => {
       increment_view(p.block.qc.view, s)
     }).and_then(s => {
       // Warning: is the view being updated before the Leader check? Lines 35-36.
-      if (p.view != s.curView or not (is_leader(s, p.sigma))) nop(s) else
+      if (p.view != s.curView or not (is_leader(s, p.sigma))) noop(s) else
 
       // Warning: The view being updated before the safety check.
-      if (not(safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view))) nop(s) else
+      if (not(safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view))) noop(s) else
 
         // Line 38
         pure val parent_proposal = props_mock.find(pp => pp.proposal_id == p.parent_id()).unwrap()
@@ -659,7 +401,7 @@ module monadbft {
     ls: LocalState,
     timeouts: Set[TimeoutMsg]
   ): Transition =
-    timeouts.fold(nop(ls), (tr, t) => {
+    timeouts.fold(noop(ls), (tr, t) => {
       tr
         .and_then(s => increment_view(t.tip.block_header.qc.view, s))
         .and_then(s => increment_view(t.tip.view, s))
@@ -678,7 +420,7 @@ module monadbft {
       val tr1 = { ...tr , postState: s0.mark_already_broadcast_timeout(v) }
       (tr1.and_then(s => trigger_timeout_event(s)), None)
     } else {
-      (nop(s0), None)
+      (noop(s0), None)
     }
   }
 
@@ -689,7 +431,7 @@ module monadbft {
   ): Transition = {
     tr.and_then(s => {
       // Update the local state with the new TC
-      if (tc == None) nop(s)
+      if (tc == None) noop(s)
       else
         { ...s, last_tc: tc, high_tip: tc.unwrap().high_tip }.and_then_state(s => {
           // TODO: it should be safe to unwrap here, but we should check.
@@ -813,6 +555,7 @@ module monadbft {
     val parent_ancestors = ancestors_mock.getOrElse(p.parent_id(), Set())
     val ancestors_mock1 = ancestors_mock.put(p.proposal_id,
       parent_ancestors.setAdd(p.parent_id()))
+
     { ...ext, ancestors_mock: ancestors_mock1 }
   }
 
@@ -875,46 +618,6 @@ module monadbft {
 
   // ------------------------------------------- Initialization & Execution -------------------------------------------
 
-  pure val sigs = range(0, 5).foldl(List(), (acc,v) => acc.append(leader_from_view(v)))
-  pure val genesis_qc = {
-    c: Set(),
-    view: 0,
-    seq: 0,
-    proposal_id: { seq: 0, view: 0, byzantine: 0 },
-    state_hash: List(),
-    sigma: sigs[0],
-  }
-
-  pure val b1 = build_block(genesis_qc, "VALID_TRANSACTION_INIT_1")
-  pure val p1 = build_proposal(1, b1, None, None, sigs[1])
-  pure val votes1 = validators.map(v => {
-    { view: 1, seq: 1, proposal_id: p1.proposal_id, state_hash: List(), sigma: v }
-  })
-  pure val qc1 = build_qc(votes1, sigs[2], List()).unwrap()
-  pure val b2 = build_block(qc1, "VALID_TRANSACTION_INIT_2")
-  pure val p2 = build_proposal(2, b2, None, None, sigs[2])
-  pure val votes2 = validators.map(v => {
-    { view: 2, seq: 2, proposal_id: p2.proposal_id, state_hash: List(p1.proposal_id), sigma: v }
-  })
-  pure val qc2 = build_qc(votes2, sigs[3], List(p1.proposal_id)).unwrap()
-  pure val b3 = build_block(qc2, "VALID_TRANSACTION_INIT_3")
-  pure val p3 = build_proposal(3, b3, None, None, sigs[3])
-  pure val votes3 = validators.map(v => {
-    { view: 3, seq: 3, proposal_id: p3.proposal_id, state_hash: List(p1.proposal_id, p2.proposal_id), sigma: v }
-  })
-  pure val qc3 = build_qc(votes3, sigs[4], List(p1.proposal_id, p2.proposal_id)).unwrap()
-  pure val b4 = build_block(qc3, "VALID_TRANSACTION_INIT_4")
-  pure val p4 = build_proposal(4, b4, None, None, sigs[4])
-
-  pure val ancestors_4 = Map(
-    p1.proposal_id -> Set(p1.proposal_id),
-    p2.proposal_id -> Set(p1.proposal_id),
-    p3.proposal_id -> Set(p1.proposal_id, p2.proposal_id),
-    p4.proposal_id -> Set(p1.proposal_id, p2.proposal_id, p3.proposal_id)
-  )
-  pure val proposals_4 = Set(p1, p2, p3, p4)
-
-  pure val initial_messages = Set(Prop(p4))
 
   pure def initialize_process_empty(process_id: Address): LocalState = {
     high_tip: None,
@@ -927,55 +630,22 @@ module monadbft {
     process_id: process_id,
   }
 
-  pure def initialize_process(process_id: Address): LocalState = {
-    val base = initialize_process_empty(process_id)
-    {
-      ...base,
-      curView: 2,
-      ledger: List(p1, p2),
-      highest_voted_view: 3,
-      tip: Some({
-        view: 3,
-        proposal_id: p3.proposal_id,
-        block_header: header_from_block(b3),
-        sigma: p3.sigma,
-        nec: None,
-      })
-    }
-  }
-
-  pure def initialize_msg_buffer(
-    process_id: Address
-  ): Set[Message] =  initial_messages
-
-  pure def initialize_internal_buffer(
-    process_id: Address
-  ): Set[InternalEvent] = Set()
-
-  pure val initial_logging: Logging = {
-    committed_proposals: validators.mapBy(_ => Set(p1, p2)),
-    msgHistory: votes1.union(votes2).map(x => Vote(x)),
-    timeoutHistory: Set(),
-  }
-
-  pure val initial_env = {
-    system: Map(),
-    msgBuffer: Map(),
-    internalBuffer: Map(),
-    logging: initial_logging,
-    extensions: {
-      proposals_mock: proposals_4,
-      ancestors_mock: ancestors_4,
-    },
-  }
-
-  action init = csmi::init(
+  // Initialization depends on the instance, so we make it parameterized
+  action init_from(initialize_process, initial_messages, initial_env) = csmi::init(
     initialize_process,
-    initialize_msg_buffer,
-    initialize_internal_buffer,
+    (_) => initial_messages,
+    (_) => Set(), // internal buffers start empty
     initial_env,
     Set()
   )
+
+  pure def env_to_context(env: Environment, process_id: Address): LocalContext =
+    {
+      msgBuffer: env.msgBuffer.getOrElse(process_id, Set()),
+      internalBuffer: env.internalBuffer.getOrElse(process_id, Set()),
+      proposals_mock: env.extensions.proposals_mock,
+      ancestors_mock: env.extensions.ancestors_mock,
+    }
 
   action step = csmi::step(
     listener,
@@ -1027,18 +697,4 @@ module monadbft {
   def commit_with_tc =
     val ps = csmi::s.logging.committed_proposals.values().flatten()
     not(ps.exists(p => p.tc != None))
-
-  // ------------------------------------------- Display Utility -------------------------------------------
-
-  type Display = Address -> Set[ProposalID]
-  pure def displayer(
-    env: Environment
-  ): Display = {
-    env.logging.committed_proposals.
-      transformValues(s => s.map(p => p.proposal_id))
-  }
-}
-
-module test {
-  import monadbft(validators = Set("v1", "v2", "v3", "v4"), F = 1).*
 }
