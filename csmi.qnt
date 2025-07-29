@@ -1,4 +1,4 @@
-    // -*- mode: Bluespec; -*-
+// -*- mode: Bluespec; -*-
 
 module csmi {
     import basicSpells.* from "lib/basicSpells"
