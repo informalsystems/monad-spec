@@ -654,15 +654,15 @@ module monadbft {
     ps.forall(p1 => ps.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
 
   /// Witness: Search for a scenario where a proposal gets reproposed.
-  val reproposal =
+  val reproposals =
     val proposals = logs.msgHistory.get_proposals()
-    proposals.exists(p =>
+    proposals.filter(p =>
       proposals.exists(p2 =>
         p.proposal_id != p2.proposal_id and p.block.seq == p2.block.seq
       )
     )
 
-  val reproposal_w = not(reproposal)
+  val reproposal_w = reproposals.size() == 0
 
   /// Witness: Search for a scenario where a proposal is committed with a TC.
   val commit_with_tc =
@@ -697,19 +697,15 @@ module monadbft {
   /// Witness: search for a disappearing TIP.
   val missing_tip =
     val props = logs.msgHistory.get_proposals()
-    val tcs = props.filter(p => p.tc != None).map(p => (p.view,p.tc.unwrap()))
+    val tcs = props.filter(p => p.tc != None).map(p => (p.view, p.tc.unwrap()))
     // find a pair of (view, tc)
-    tcs.exists(pair => {
-      val view1 = pair._1
-      val tc1 = pair._2
-      tc1.high_tip != None and
-      tcs.exists(pair2 => {
-        val view2 = pair2._1
-        val tc2 = pair2._2
-        view1 < view2 and
-        tc2.high_tip != None and
-        tc1.high_tip.unwrap().view > tc2.high_tip.unwrap().view
-      })
+    tcs.exists(((view1, tc1)) => {
+      tc1.high_tip != None
+        and tcs.exists(((view2, tc2)) => {
+          view1 < view2
+            and tc2.high_tip != None
+            and tc1.high_tip.unwrap().view > tc2.high_tip.unwrap().view
+        })
     })
 
   val missing_tip_w = not(missing_tip)
