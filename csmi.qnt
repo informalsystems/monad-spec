@@ -159,15 +159,17 @@ module csmi {
         initial_msgBuffer: (p) => Set[m],
         initial_internalBuffer: (p) => Set[te],
         env : Environment[p, s, m, te, l, extensions],
-        byzNetworkMsgs: Set[m],
-    ):bool = all{
-        s' =  { ... env,
+        displayer : Displayer[p, s, m, te, l, extensions, d],
+    ):bool = {
+        val e = { ... env,
             system: processes.mapBy(initialize_processes),
             msgBuffer: processes.mapBy(initial_msgBuffer),
             internalBuffer: processes.mapBy(initial_internalBuffer),
-        },
-        byzNetworkMsgs' = byzNetworkMsgs,
-
+        }
+        all {
+          s' = e,
+          display' = displayer(e),
+        }
     }
 
     /// Initialize the state machine with an environment and a set of byzantine messages.

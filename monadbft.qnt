@@ -6,6 +6,7 @@ module monadbft {
   import csmi(processes = validators) as csmi from "csmi"
   import types.* from "types"
   import utils.* from "utils"
+  import mocks.* from "mocks"
 
   /// Set of validators participating in the consensus.
   const validators: Set[Address]
@@ -44,21 +45,21 @@ module monadbft {
     s.ledger.foldl(List(), (acc, p) => acc.append(p.proposal_id))
   }
 
+  pure def leader_from_view(view: int): Address = {
+    leaders[view % leaders.length()]
+  }
+
   /// Check if a node(other) is the leader of some view
   pure def is_leader(s: LocalState, signature: Address): bool =
     leader_from_view(s.curView) == signature
 
   /// Check if the node(self) is the leader of the current view
-  pure def i_am_leader(s: LocalState): bool =
+  pure def am_i_leader(s: LocalState): bool =
     leader_from_view(s.curView) == s.process_id
 
-  pure def leader_from_view(view: int): Address = {
-    leaders[view % leaders.length()]
-  }
-
   /// Check if qc1 extends qc2
-  pure def extend(qc1: QC, qc2: QC, ancestors: ProposalID -> Set[ProposalID]): bool =
-    ancestors.getOrElse(qc1.proposal_id, Set()).contains(qc2.proposal_id)
+  pure def extend(qc1: QC, qc2: QC, ancestors_mock: AncestorsMock): bool =
+    ancestors_mock.fetch_ancestors(qc1.proposal_id).contains(qc2.proposal_id)
 
   /// Check if two proposals are conflicting
   pure def conflicting_props(p1: Proposal, p2: Proposal, ancestors: ProposalID -> Set[ProposalID]): bool =
@@ -71,16 +72,6 @@ module monadbft {
   /// This function retruns a set of Tips.
   pure def get_tips_from_timeouts(msgs: Set[TimeoutMsg]): Set[Tip]= {
     msgs.fold(Set(), (acc, msg) => acc.setAdd(msg.tip))
-  }
-
-  /// Extract the block header out of a block
-  pure def header_from_block(b: Block): BlockHeader = {
-    {
-      seq: b.seq,
-      payload_hash: b.payload_hash,
-      qc: b.qc,
-      block_hash: b.block_hash,
-    }
   }
 
   /// Build a TC out of a set of timeout messages
@@ -104,7 +95,7 @@ module monadbft {
     else
       val seq = votes.map(v => v.seq).getOnlyElement()
       val view = votes.map(v => v.view).getOnlyElement()
-      val id = { seq:  seq, view: view, byzantine: 0 }
+      val id = { seq: seq, view: view, byzantine: 0 }
       Some({
         c: votes,
         view: view,
@@ -129,9 +120,9 @@ module monadbft {
 
   /// Revert the ledger back to the latest ancestor of p that is in the ledger.
   /// `ancestors` maps each proposalID to the full set of its ancestor‐IDs.
-  pure def revert_ledger(ledger: Ledger, p: Proposal, ancestors: ProposalID -> Set[ProposalID]): Ledger = {
+  pure def revert_ledger(ledger: Ledger, p: Proposal, ancestors_mock: AncestorsMock): Ledger = {
     // 1) Look up the set of all ancestor IDs for p
-    pure val ancIds = ancestors.getOrElse(p.proposal_id, Set())
+    pure val ancIds = ancestors_mock.fetch_ancestors(p.proposal_id)
 
     // 2) Walk the ledger and remember the last index where we saw one of those IDs
     //  foldl((nextIndex, lastMatch), ((idx, foundIdx), elem )) =>
@@ -154,16 +145,6 @@ module monadbft {
     } else {
       ledger.slice(0, lastIdx + 1)
     }
-  }
-
-  /// Check if a block was alread received
-  pure def block_present(mock: Set[Proposal], bh: BlockHeader): bool = {
-    mock.exists(p => p.block.header_from_block() == bh)
-  }
-
-  /// Fetch the block from the local state
-  pure def get_present_block(mock: Set[Proposal], bh: BlockHeader): Block = {
-    mock.find(p => p.block.header_from_block() == bh).unwrap().block
   }
 
   //
@@ -329,15 +310,15 @@ module monadbft {
 
     {
       postState: { ...s, highest_voted_view: max(s.highest_voted_view, s.curView) },
-      effects: Set(BroadCastTimeout(timeout_msg))
+      effects: Set(BroadcastTimeout(timeout_msg))
     }
   }
 
   pure def handle_proposal(
     ls: LocalState,
     p: Proposal,
-    props_mock: Set[Proposal], // This is a mock environment extension to simulate proposal fetching
-    ancestors_mock: ProposalID -> Set[ProposalID] // This is a mock environment extension to simulate ancestor fetching
+    props_mock: ProposalsMock,
+    ancestors_mock: AncestorsMock,
   ): Transition = {
     match p.tc {
       | None => noop(ls)
@@ -351,50 +332,50 @@ module monadbft {
       // Warning: The view being updated before the safety check.
       if (not(safety_check(p) and p.view > max(s.highest_voted_view, p.block.qc.view))) noop(s) else
 
-        // Line 38
-        pure val parent_proposal = props_mock.find(pp => pp.proposal_id == p.parent_id()).unwrap()
-        pure val grandparent_proposal = props_mock.find(pp => pp.proposal_id == parent_proposal.parent_id()).unwrap()
+      // Line 38
+      pure val parent_proposal = props_mock.fetch(p.parent_id())
 
-        // Line 41
-        pure val commit = if (p.block.qc.view == parent_proposal.block.qc.view + 1)
-          Set(Commit(grandparent_proposal), Confirmation(p))
-        else
-          Set()
+      // Line 41
+      pure val commit = if (p.block.qc.view == parent_proposal.block.qc.view + 1)
+        pure val grandparent_proposal = props_mock.fetch(parent_proposal.parent_id())
+        Set(Commit(grandparent_proposal), Confirmation(p))
+      else
+        Set()
 
-        // Line 43
-        pure val early_confirmation = if (p.view == p.block.qc.view + 1) // Warning: typo in the paper
-          Set(EarlyConfirmation(parent_proposal))
-        else
-          Set()
+      // Line 43
+      pure val early_confirmation = if (p.view == p.block.qc.view + 1) // Warning: typo in the paper
+        Set(EarlyConfirmation(parent_proposal))
+      else
+        Set()
 
-        // Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor.
-        pure val reverted_ledger = if (proposal_conflicts(s.ledger, parent_proposal, ancestors_mock))
-          revert_ledger(s.ledger, parent_proposal, ancestors_mock)
-        else
-          s.ledger
+      // Line 44 - If ledger conflicts with parent proposal, revert to the common ancestor.
+      pure val reverted_ledger = if (proposal_conflicts(s.ledger, parent_proposal, ancestors_mock))
+        revert_ledger(s.ledger, parent_proposal, ancestors_mock)
+      else
+        s.ledger
 
-        // Line 45 - Speculate
-        pure val ledger = if (p.view == p.block.qc.view + 1)
-          execute_block(reverted_ledger, parent_proposal)
-        else
-          reverted_ledger
+      // Line 45 - Speculate
+      pure val ledger = if (p.view == p.block.qc.view + 1)
+        execute_block(reverted_ledger, parent_proposal)
+      else
+        reverted_ledger
 
-        pure val vote_msg = {
-          view: p.view,
-          seq: p.block.seq,
-          proposal_id: p.proposal_id,
-          state_hash: state_hash(s),
-          sigma: s.process_id,
-        }
+      pure val vote_msg = {
+        view: p.view,
+        seq: p.block.seq,
+        proposal_id: p.proposal_id,
+        state_hash: state_hash(s),
+        sigma: s.process_id,
+      }
 
-        pure val next_leader = leader_from_view(p.view + 1)
-        pure val send_vote = Set(SendVoteToNextLeader((next_leader, vote_msg)))
+      pure val next_leader = leader_from_view(p.view + 1)
+      pure val send_vote = Set(SendVoteToNextLeader((next_leader, vote_msg)))
 
-        {
-          postState: { ...s, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p) },
-          effects: commit.union(early_confirmation).union(send_vote)
-        }
-      })
+      {
+        postState: { ...s, highest_voted_view: p.view, ledger: ledger, tip: update_tip(p) },
+        effects: commit.union(early_confirmation).union(send_vote)
+      }
+    })
   }
 
   pure def acc_timeouts(
@@ -427,7 +408,7 @@ module monadbft {
   pure def post_handle_timeouts(
     tr: Transition,
     tc: Option[TC],
-    mock: Set[Proposal], // This is a mock environment extension to simulate proposal fetching
+    props_mock: ProposalsMock,
   ): Transition = {
     tr.and_then(s => {
       // Update the local state with the new TC
@@ -439,11 +420,11 @@ module monadbft {
 
           // if block and its payload (block.payload) for high tip is present
           // Line 17
-          val block = get_present_block(mock, high_tip.block_header)
+          val block = props_mock.get_present_block(high_tip.block_header)
           val p = build_proposal(s.curView, block, tc, None, s.process_id)
           { postState: s, effects: Set(BroadcastProp(p)) }
-            // Line 18-19-20 recoveringcurView ← true; SendRecoveryRequest(curView, high tip, tc);
-            // TODO: For the moment this is replaced by fetching the block from the DA variable for debugging purposes
+          // Line 18-19-20 recoveringcurView ← true; SendRecoveryRequest(curView, high tip, tc);
+          // TODO: For the moment this is replaced by fetching the block from the DA variable for debugging purposes
         })
     })
   }
@@ -470,21 +451,23 @@ module monadbft {
     val votes_messages = get_votes(context.msgBuffer)
     val valid_votes = votes_messages.filter(v => v.view >= ls.curView)
     // Group votes by proposal ID
-    valid_votes
+    val quorums = valid_votes
       .groupBy(v => v.proposal_id)
       .values()
       .filterMap(s => build_qc(s, ls.process_id, state_hash(ls)))
-      .map(qc => (qc, increment_view(qc.view, ls)))
-      .filter(pair => pair._2.postState.i_am_leader()) // am I the leader post view increment?
-      .map(pair => {
-        val qc = pair._1
-        val transition = pair._2
-        transition.and_then(s => {
-          val new_block = build_block(qc, BLOCK_PAYLOAD)
-          val p = build_proposal(s.curView, new_block, None, None, s.process_id)
-          { postState: s, effects: Set(BroadcastProp(p)) }
-        })
-      })
+
+    quorums.filterMap(qc => {
+      pure val new_s = increment_view(qc.view, ls)
+
+      // Skip this quorum if I'm not the leader in the new view
+      if (not(new_s.postState.am_i_leader())) None else
+
+      Some(new_s.and_then(s => {
+        val new_block = build_block(qc, BLOCK_PAYLOAD)
+        val p = build_proposal(s.curView, new_block, None, None, s.process_id)
+        { postState: s, effects: Set(BroadcastProp(p)) }
+      }))
+    })
   }
 
   pure def leader_upon_timeout_quorum(ls: LocalState, context: LocalContext): Transitions = {
@@ -496,7 +479,7 @@ module monadbft {
       .groupBy(t => t.view)
       .values()
       .map(s => handle_timeouts(acc_timeouts(ls, s), s))
-      .filter(r => r._1.postState.i_am_leader())
+      .filter(r => r._1.postState.am_i_leader())
       .map(pair => post_handle_timeouts(pair._1, pair._2, mock_proposals))
   }
 
@@ -508,7 +491,7 @@ module monadbft {
       .groupBy(t => t.view)
       .values()
       .map(s => handle_timeouts(acc_timeouts(ls, s), s)._1)
-      .filter(r => not(r.postState.i_am_leader()))
+      .filter(r => not(r.postState.am_i_leader()))
   }
 
   pure def upon_timeout_event(ls: LocalState, context: LocalContext): Transitions = {
@@ -534,29 +517,35 @@ module monadbft {
 
   // ------------------------------------------- Effect Application -------------------------------------------
 
-  pure def broadcast(
-    env: Environment,
-    msg: Message
-  ): Environment =
+  pure def broadcast_message(env: Environment, msg: Message): Environment =
     { ...env, msgBuffer: env.msgBuffer.transformValues(s => s.setAdd(msg)) }
 
-  pure def send(
-    env: Environment,
-    v: Address,
-    msg: Message
-  ): Environment =
+  pure def send_message(env: Environment, v: Address, msg: Message): Environment =
     { ...env, msgBuffer: env.msgBuffer.setBy(v, s => s.setAdd(msg)) }
 
-  pure def update_ancestors(
-    ext: EnvExtensions,
-    p: Proposal
-  ): EnvExtensions = {
-    val ancestors_mock = ext.ancestors_mock
-    val parent_ancestors = ancestors_mock.getOrElse(p.parent_id(), Set())
-    val ancestors_mock1 = ancestors_mock.put(p.proposal_id,
-      parent_ancestors.setAdd(p.parent_id()))
+  pure def log_message(env: Environment, msg: Message): Environment =
+    { ...env, logging: { ...env.logging, msgHistory: env.logging.msgHistory.setAdd(msg) } }
 
-    { ...ext, ancestors_mock: ancestors_mock1 }
+  pure def log_commit(env: Environment, v: Address, p: Proposal): Environment =
+    { ...env, logging: {
+      ...env.logging,
+      committed_proposals: env.logging.committed_proposals.setBy(v, s => s.setAdd(p))
+    }}
+
+  pure def save_proposal_to_mocks(env: Environment, p: Proposal): Environment = {
+    // Abstraction: This was added to provide a data availability layer
+    // for the proposals to avoid having missing proposals, and remove the
+    // need for a block recovery mechanism.
+    // TODO: refactor this when we have a block recovery mechanism.
+
+    val ext = env.extensions
+    val ext1 = {
+      ...ext,
+      proposals_mock: ext.proposals_mock.setAdd(p),
+      ancestors_mock: ext.ancestors_mock.save_ancestor(p.proposal_id, p.parent_id())
+    }
+
+    { ...env, extensions: ext1 }
   }
 
   pure def apply_effect(env: Environment, v: Address, tr: Transition): Environment = {
@@ -567,42 +556,26 @@ module monadbft {
 
     effects.fold(env1, (e, x) =>
       match x {
-        | BroadcastProp(p) => {
-          // Abstraction: This was added to provide a data availability layer for the proposals to avoid having missing proposals.
-          // and remove the need for a block recovery mechanism.
-          // TODO: refractor this when we have a block recovery mechanism.
-          val ext = e.extensions
-          val log = e.logging
-          val ext1 = { ...ext, proposals_mock: ext.proposals_mock.setAdd(p) }
-          val log1 = { ...log, msgHistory: log.msgHistory.setAdd(Prop(p)) }
+        | BroadcastProp(p) =>
+          pure val message = Prop(p)
+          e
+            .save_proposal_to_mocks(p)
+            .log_message(message)
+            .broadcast_message(message)
 
-          val e1 = {
-            ...e,
-            logging: log1,
-            extensions: update_ancestors(ext1 ,p),
-          }
-          broadcast(e1, Prop(p))
-        }
-
-        | BroadCastTimeout(t) => broadcast(e, Timeout(t))
+        | BroadcastTimeout(t) =>
+          e.broadcast_message(Timeout(t))
 
         | Commit(p) =>
-          val log = e.logging
-          val log1 = {
-            ...log,
-            committed_proposals: log.committed_proposals.setBy(v, s => s.setAdd(p))
-          }
-          { ...e, logging: log1 }
+          e.log_commit(v, p)
 
         | EarlyConfirmation(p) => e
 
         | Confirmation(p) => e
 
         | SendVoteToNextLeader(am) =>
-          val log = e.logging
-          val log1 = { ...log, msgHistory: log.msgHistory.setAdd(Vote(am._2)) }
-          val e1 = { ...e, logging: log1 }
-          send(e1,  am._1, Vote(am._2))
+          pure val message = Vote(am._2)
+          e.log_message(message).send_message(am._1, message)
 
         | StartTimeout(t) =>
           // We want to have a single active timeout per process
@@ -617,7 +590,6 @@ module monadbft {
   }
 
   // ------------------------------------------- Initialization & Execution -------------------------------------------
-
 
   pure def initialize_process_empty(process_id: Address): LocalState = {
     high_tip: None,
@@ -636,10 +608,10 @@ module monadbft {
     (_) => initial_messages,
     (_) => Set(), // internal buffers start empty
     initial_env,
-    Set()
+    displayer
   )
 
-  pure def env_to_context(env: Environment, process_id: Address): LocalContext =
+  pure def env_to_local_context(env: Environment, process_id: Address): LocalContext =
     {
       msgBuffer: env.msgBuffer.getOrElse(process_id, Set()),
       internalBuffer: env.internalBuffer.getOrElse(process_id, Set()),
@@ -650,16 +622,20 @@ module monadbft {
   action step = csmi::step(
     listener,
     apply_effect,
-    env_to_context,
+    env_to_local_context,
     displayer,
     Set()
   )
 
   // ------------------------------------------- Invariants and Witnesses -------------------------------------------
+
+  /// Accessor
+  val logs = csmi::s.logging
+
   /// Witness: Search for a scenario where a proposal gets reproposed.
-  def reproposal =
+  val reproposal =
     not(
-      val proposals = csmi::s.logging.msgHistory.fold(Set(), (s, x) => match x {
+      val proposals = logs.msgHistory.fold(Set(), (s, x) => match x {
         | Prop(p) => s.setAdd(p)
         | _ => s
       })
@@ -669,12 +645,12 @@ module monadbft {
     )
 
   /// No Tail-Forking (NTF) page 10:
-  def ntf =
-    val votes = csmi::s.logging.msgHistory.fold(Set(), (s, x) => match x {
+  val ntf =
+    val votes = logs.msgHistory.fold(Set(), (s, x) => match x {
       | Vote(v) => s.setAdd(v)
       | _ => s
     })
-    val committed_proposals = csmi::s.logging.committed_proposals.values().flatten()
+    val committed_proposals = logs.committed_proposals.values().flatten()
     votes.forall(v =>
       // If an honest leader’s proposal for sequence number s is voted upon by a majority of honest validators,
       // TODO: filter faulty proposer's proposals
@@ -688,13 +664,12 @@ module monadbft {
 
   /// Safety property page 10: No two correct validators commit different blocks
   /// for the same sequence number
-  def safety =
-    val ps = csmi::s.logging.committed_proposals.values().flatten()
+  val safety =
+    val ps = logs.committed_proposals.values().flatten()
     ps.forall(p1 => ps.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
 
-
   /// Witness: Search for a scenario where a proposal is committed with a TC.
-  def commit_with_tc =
-    val ps = csmi::s.logging.committed_proposals.values().flatten()
+  val commit_with_tc =
+    val ps = logs.committed_proposals.values().flatten()
     not(ps.exists(p => p.tc != None))
 }

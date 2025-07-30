@@ -133,7 +133,7 @@ module types {
 
   type Effects =
     | BroadcastProp(Proposal)
-    | BroadCastTimeout(TimeoutMsg)
+    | BroadcastTimeout(TimeoutMsg)
     | Commit(Proposal)
     | EarlyConfirmation(Proposal)
     | Confirmation(Proposal)
@@ -180,4 +180,17 @@ module types {
   ]
 
   type LocalContext = csmi::LocalContext[Message, InternalEvent, EnvExtensions]
+
+
+  // Basic type conversions
+
+  /// Extract the block header out of a block
+  pure def header_from_block(b: Block): BlockHeader = {
+    {
+      seq: b.seq,
+      payload_hash: b.payload_hash,
+      qc: b.qc,
+      block_hash: b.block_hash,
+    }
+  }
 }
