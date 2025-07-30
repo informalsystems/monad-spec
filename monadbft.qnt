@@ -632,24 +632,9 @@ module monadbft {
   /// Accessor
   val logs = csmi::s.logging
 
-  /// Witness: Search for a scenario where a proposal gets reproposed.
-  val reproposal =
-    not(
-      val proposals = logs.msgHistory.fold(Set(), (s, x) => match x {
-        | Prop(p) => s.setAdd(p)
-        | _ => s
-      })
-      proposals.exists(p =>
-        proposals.exists(p2 =>
-        p.proposal_id != p2.proposal_id and p.block.seq == p2.block.seq))
-    )
-
   /// No Tail-Forking (NTF) page 10:
   val ntf =
-    val votes = logs.msgHistory.fold(Set(), (s, x) => match x {
-      | Vote(v) => s.setAdd(v)
-      | _ => s
-    })
+    val votes = logs.msgHistory.get_votes()
     val committed_proposals = logs.committed_proposals.values().flatten()
     votes.forall(v =>
       // If an honest leader’s proposal for sequence number s is voted upon by a majority of honest validators,
@@ -668,8 +653,64 @@ module monadbft {
     val ps = logs.committed_proposals.values().flatten()
     ps.forall(p1 => ps.forall(p2 => p1.block.seq == p2.block.seq implies p1 == p2))
 
+  /// Witness: Search for a scenario where a proposal gets reproposed.
+  val reproposal =
+    val proposals = logs.msgHistory.get_proposals()
+    proposals.exists(p =>
+      proposals.exists(p2 =>
+        p.proposal_id != p2.proposal_id and p.block.seq == p2.block.seq
+      )
+    )
+
+  val reproposal_w = not(reproposal)
+
   /// Witness: Search for a scenario where a proposal is committed with a TC.
   val commit_with_tc =
     val ps = logs.committed_proposals.values().flatten()
-    not(ps.exists(p => p.tc != None))
+    ps.exists(p => p.tc != None)
+
+  val commit_with_tc_w = not(commit_with_tc)
+
+  /// Witness: search for a QC that was not followed by a proposal referencing it.
+  val missing_qc =
+    val votes = logs.msgHistory.get_votes()
+    val props = logs.msgHistory.get_proposals()
+    // Group views by view and proposal_id
+    val grouped_votes = votes.groupBy(v => (v.view, v.proposal_id))
+    grouped_votes.values().exists(entry => {
+      val view = entry.map(v => v.view).getOnlyElement()
+      val quorum = entry.size() >= Q
+
+      val skipped = props.exists(
+        p => p.block.qc.view > view
+      )
+
+      val not_used = props.forall(
+        p => p.block.qc.view != view
+      )
+
+      quorum and skipped and not_used and view > 4
+    })
+
+  val missing_qc_w = not(missing_qc)
+
+  /// Witness: search for a disappearing TIP.
+  val missing_tip =
+    val props = logs.msgHistory.get_proposals()
+    val tcs = props.filter(p => p.tc != None).map(p => (p.view,p.tc.unwrap()))
+    // find a pair of (view, tc)
+    tcs.exists(pair => {
+      val view1 = pair._1
+      val tc1 = pair._2
+      tc1.high_tip != None and
+      tcs.exists(pair2 => {
+        val view2 = pair2._1
+        val tc2 = pair2._2
+        view1 < view2 and
+        tc2.high_tip != None and
+        tc1.high_tip.unwrap().view > tc2.high_tip.unwrap().view
+      })
+    })
+
+  val missing_tip_w = not(missing_tip)
 }

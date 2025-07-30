@@ -25,9 +25,8 @@ module utils {
     state: LocalState,
     f: LocalState => r
   ): r = f(state)
-  pure def get_proposals(
-    messages: Set[Message]
-  ): Set[Proposal] =
+
+  pure def get_proposals(messages: Set[Message]): Set[Proposal] =
     messages.filterMap(m => {
       match m {
         | Prop(p) => Some(p)
@@ -35,9 +34,7 @@ module utils {
       }
     })
 
-  pure def get_votes(
-    messages: Set[Message]
-  ): Set[VoteMsg] =
+  pure def get_votes(messages: Set[Message]): Set[VoteMsg] =
     messages.filterMap(m => {
       match m {
         | Vote(v) => Some(v)
@@ -45,9 +42,7 @@ module utils {
       }
     })
 
-  pure def get_timeouts(
-    messages: Set[Message]
-  ): Set[TimeoutMsg] =
+  pure def get_timeouts(messages: Set[Message]): Set[TimeoutMsg] =
     messages.filterMap(m => {
       match m {
         | Timeout(t) => Some(t)
@@ -55,9 +50,7 @@ module utils {
       }
     })
 
-  pure def get_timeout_events(
-    events: Set[InternalEvent]
-  ): Set[TimeoutData] =
+  pure def get_timeout_events(events: Set[InternalEvent]): Set[TimeoutData] =
     events.filterMap(e => {
       match e {
         | TimeoutEvent(data) => Some(data)
@@ -65,9 +58,7 @@ module utils {
       }
     })
 
-  pure def displayer(
-    env: Environment
-  ): Address -> Set[ProposalID] = {
+  pure def displayer(env: Environment): Address -> Set[ProposalID] = {
     env.logging.committed_proposals.
       transformValues(s => s.map(p => p.proposal_id))
   }
